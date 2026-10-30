@@ -10,6 +10,8 @@
   available from `cargo metadata --locked`. The portable binary packager includes dependency notices.
   This includes egui/epaint default fonts, whose nested OFL, Ubuntu Font License, Hack and emoji font
   notices must accompany binaries embedding those fonts.
+  Supplemental upstream notices and their download URLs/hashes are preserved in `assets/licenses/`.
+  `tools/Copy-Supplemental-Notices.ps1` verifies these notices before the release builder copies them.
 - Visual C++ runtime DLLs are included only by the binary packager, from an installed official Visual
   Studio redistribution folder, with its redistributable and third-party notices.
 

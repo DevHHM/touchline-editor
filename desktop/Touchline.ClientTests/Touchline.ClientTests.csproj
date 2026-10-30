@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseAppHost>true</UseAppHost>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../Touchline.Wpf/BridgeClient.cs" Link="BridgeClient.cs" />
+    <Compile Include="../Touchline.Wpf/Models.cs" Link="Models.cs" />
+    <Compile Include="../Touchline.Wpf/PositionOrder.cs" Link="PositionOrder.cs" />
+    <Compile Include="../Touchline.Wpf/SearchCriteria.cs" Link="SearchCriteria.cs" />
+    <Compile Include="../Touchline.Wpf/SearchColumns.cs" Link="SearchColumns.cs" />
+    <Compile Include="../Touchline.Wpf/LiveReloadState.cs" Link="LiveReloadState.cs" />
+    <Compile Include="../Touchline.Wpf/GameEditionPresentation.cs" Link="GameEditionPresentation.cs" />
+    <Compile Include="../Touchline.Wpf/DetailPresentation.cs" Link="DetailPresentation.cs" />
+    <Compile Include="../Touchline.Wpf/ClubGrowthAvailability.cs" Link="ClubGrowthAvailability.cs" />
+    <Compile Include="../Touchline.Wpf/PackagePaths.cs" Link="PackagePaths.cs" />
+    <Compile Include="../Touchline.Wpf/DesktopWindowPreferences.cs" Link="DesktopWindowPreferences.cs" />
+    <Compile Include="../Touchline.Wpf/EditorShortcuts.cs" Link="EditorShortcuts.cs" />
+  </ItemGroup>
+</Project>

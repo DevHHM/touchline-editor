@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>Touchline Editor</AssemblyName>
+    <RootNamespace>Touchline.Wpf</RootNamespace>
+    <Version>0.12.0</Version>
+    <ApplicationIcon>../../assets/icons/touchline.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="WPF-UI" Version="4.3.0" />
+    <Resource Include="../../assets/icons/touchline.ico" Link="Icons/touchline.ico" />
+    <Resource Include="../../assets/icons/touchline.png" Link="Icons/touchline.png" />
+    <Resource Include="../../assets/fonts/Pretendard-Regular.otf" Link="Fonts/Pretendard-Regular.otf" />
+    <Resource Include="../../assets/fonts/Pretendard-Medium.otf" Link="Fonts/Pretendard-Medium.otf" />
+    <Resource Include="../../assets/fonts/Pretendard-SemiBold.otf" Link="Fonts/Pretendard-SemiBold.otf" />
+    <Resource Include="../../assets/fonts/Pretendard-Bold.otf" Link="Fonts/Pretendard-Bold.otf" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,21 @@
+/target/
+/dist/
+/verification/
+/verification-*/
+/output/
+*.log
+/tools/dotnet/
+/desktop/**/bin/
+/desktop/**/obj/
+
+# Local credentials, editor state, personal saves and compiled artifacts
+.env
+.env.*
+*.pdb
+*.fm
+*.dmp
+**/__pycache__/
+api.json
+*.zip
+*.exe
+*.dll

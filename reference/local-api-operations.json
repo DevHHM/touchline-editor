@@ -1,0 +1,1632 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "document_type": "touchline-api-operation-reference",
+  "api_version": "1.0",
+  "generated_from": [
+    "src/bridge/relations.rs::Operation",
+    "src/relations/targets.rs::CareerTargetRef",
+    "src/relations.rs::NameField",
+    "src/workspace.rs::Ref",
+    "src/events.rs::EventDraft"
+  ],
+  "usage": {
+    "operations_are": "JSON Schema fragments for relation_preview.args.operation, plus non-writing request templates",
+    "templates": "All entity/target UIDs are deliberately zero placeholders. They are not real game IDs. Replace with search/detail results. Examples only preview and never apply.",
+    "required_sequence": [
+      "relation_detail for the owner",
+      "relation_preview using a template",
+      "inspect can_apply and before/after",
+      "call relation_apply with its single-use token only when authorized"
+    ],
+    "slot_rule": "Slots are zero-based indices in the currently retained relation_detail baseline. Refreshing relation_detail invalidates earlier tokens. Re-read after any deletion/apply."
+  },
+  "$defs": {
+    "EntityRef": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "Player",
+            "Staff",
+            "Person",
+            "Club",
+            "City"
+          ]
+        },
+        "id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "description": "Use actual indexed UID. Zero is a template placeholder and is not a valid selected target."
+        }
+      },
+      "required": [
+        "kind",
+        "id"
+      ],
+      "additionalProperties": false
+    },
+    "CareerTargetRef": {
+      "type": "object",
+      "properties": {
+        "object_type": {
+          "type": "integer",
+          "enum": [
+            3,
+            5,
+            9,
+            25
+          ]
+        },
+        "uid": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "description": "Resolve through career_targets; zero is only a template placeholder."
+        }
+      },
+      "required": [
+        "object_type",
+        "uid"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "semantic_constraints": {
+    "career_target_types": {
+      "3": "Club",
+      "5": "Continent",
+      "9": "Nation",
+      "25": "Competition"
+    },
+    "career_conditions": {
+      "1": "맡고 싶음",
+      "2": "맡고 싶지 않음",
+      "3": "지식 있음",
+      "4": "지식 없음",
+      "5": "스카우트 선호 지역",
+      "6": "스카우트 비선호 지역"
+    },
+    "career_scopes": {
+      "1": "구단",
+      "2": "국가대표"
+    },
+    "career_jobs": {
+      "0": "무직",
+      "1": "선수",
+      "2": "코치",
+      "3": "U18 코치",
+      "4": "회장",
+      "6": "이사",
+      "8": "상무 이사",
+      "10": "풋볼 디렉터",
+      "12": "물리치료사",
+      "14": "스카우트",
+      "16": "감독",
+      "17": "U18 감독",
+      "20": "수석 코치",
+      "21": "U18 수석 코치",
+      "22": "세트피스 코치",
+      "24": "단장",
+      "26": "체력 코치",
+      "27": "U18 체력 코치",
+      "34": "골키퍼 코치",
+      "35": "U18 골키퍼 코치",
+      "38": "수석 의사",
+      "40": "수석 스포츠 과학자",
+      "44": "수석 스카우트",
+      "45": "U18 수석 스카우트",
+      "46": "의사",
+      "48": "스포츠 과학자",
+      "50": "수석 물리치료사",
+      "52": "U19 감독",
+      "58": "영입 분석가",
+      "60": "전력 분석가",
+      "61": "U18 전력 분석가",
+      "62": "수석 전력 분석가",
+      "64": "유소년 육성 총괄",
+      "66": "구단주",
+      "70": "대표",
+      "86": "임대 매니저",
+      "88": "테크니컬 디렉터",
+      "89": "U18 테크니컬 디렉터",
+      "144": "감독 대행"
+    },
+    "social_kinds": {
+      "1": {
+        "label": "좋아하는 인물",
+        "target_kinds": [
+          "Player",
+          "Staff",
+          "Person"
+        ],
+        "reason_range": [
+          0,
+          11
+        ]
+      },
+      "2": {
+        "label": "싫어하는 인물",
+        "target_kinds": [
+          "Player",
+          "Staff",
+          "Person"
+        ],
+        "reason_values": [
+          0
+        ]
+      },
+      "3": {
+        "label": "좋아하는 구단",
+        "target_kinds": [
+          "Club"
+        ],
+        "reason_range": [
+          0,
+          4
+        ]
+      },
+      "4": {
+        "label": "싫어하는 구단",
+        "target_kinds": [
+          "Club"
+        ],
+        "reason_values": [
+          0
+        ]
+      }
+    },
+    "favourite_club_reasons": {
+      "0": "없음",
+      "1": "서포터",
+      "2": "선수",
+      "3": "감독",
+      "4": "스태프"
+    },
+    "liked_person_reasons": {
+      "0": "없음",
+      "1": "부모",
+      "2": "형제자매",
+      "3": "자녀",
+      "4": "친척",
+      "5": "동료",
+      "6": "감독",
+      "7": "선수",
+      "8": "스태프",
+      "9": "우상",
+      "10": "친구",
+      "11": "유소년 스태프"
+    },
+    "social_level_range": [
+      0,
+      100
+    ],
+    "relation_owner_kinds": [
+      "Player",
+      "Staff",
+      "Person"
+    ],
+    "availability": "Native record ownership, duplicates, current slot capabilities and semantic ID resolution are additionally validated at preview/apply. Schema acceptance alone does not imply an operation is available."
+  },
+  "operations": [
+    {
+      "action": "add_career_target",
+      "rust_variant": "AddCareerTarget",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "const": "add_career_target"
+          },
+          "target": {
+            "$ref": "#/$defs/CareerTargetRef",
+            "x-rust-type": "engine::targets::CareerTargetRef"
+          },
+          "condition": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255,
+            "x-rust-type": "u8",
+            "enum": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6
+            ]
+          },
+          "scope": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255,
+            "x-rust-type": "u8",
+            "enum": [
+              1,
+              2
+            ]
+          },
+          "job": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255,
+            "x-rust-type": "u8",
+            "enum": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              6,
+              8,
+              10,
+              12,
+              14,
+              16,
+              17,
+              20,
+              21,
+              22,
+              24,
+              26,
+              27,
+              34,
+              35,
+              38,
+              40,
+              44,
+              45,
+              46,
+              48,
+              50,
+              52,
+              58,
+              60,
+              61,
+              62,
+              64,
+              66,
+              70,
+              86,
+              88,
+              89,
+              144
+            ]
+          }
+        },
+        "required": [
+          "action",
+          "target",
+          "condition",
+          "scope",
+          "job"
+        ],
+        "additionalProperties": false
+      },
+      "preview_template": {
+        "id": 1,
+        "command": "relation_preview",
+        "args": {
+          "kind": "Player",
+          "id": 0,
+          "operation": {
+            "action": "add_career_target",
+            "target": {
+              "object_type": 3,
+              "uid": 0
+            },
+            "condition": 1,
+            "scope": 1,
+            "job": 1
+          }
+        }
+      },
+      "notes": [
+        "Preferred general creation path; supports club, continent, nation and competition. Read career.can_add/can_create and add_reason first."
+      ],
+      "replace_before_use": [
+        "args.kind and args.id: current Player/Staff/Person identity from search",
+        "operation slot/template_slot: current relation_detail result; relation rows and career.rows are separate",
+        "all zero target/donor/club/nation UIDs: actual verified semantic IDs, never memory addresses"
+      ]
+    },
+    {
+      "action": "set_career_target",
+      "rust_variant": "SetCareerTarget",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "const": "set_career_target"
+          },
+          "slot": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 18446744073709551615,
+            "description": "Rust usize on the Windows x64 engine. Use the exact current slot returned by relation_detail.",
+            "x-rust-type": "usize"
+          },
+          "target": {
+            "$ref": "#/$defs/CareerTargetRef",
+            "x-rust-type": "engine::targets::CareerTargetRef"
+          },
+          "condition": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255,
+            "x-rust-type": "u8",
+            "enum": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6
+            ]
+          },
+          "scope": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255,
+            "x-rust-type": "u8",
+            "enum": [
+              1,
+              2
+            ]
+          },
+          "job": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255,
+            "x-rust-type": "u8",
+            "enum": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              6,
+              8,
+              10,
+              12,
+              14,
+              16,
+              17,
+              20,
+              21,
+              22,
+              24,
+              26,
+              27,
+              34,
+              35,
+              38,
+              40,
+              44,
+              45,
+              46,
+              48,
+              50,
+              52,
+              58,
+              60,
+              61,
+              62,
+              64,
+              66,
+              70,
+              86,
+              88,
+              89,
+              144
+            ]
+          }
+        },
+        "required": [
+          "action",
+          "slot",
+          "target",
+          "condition",
+          "scope",
+          "job"
+        ],
+        "additionalProperties": false
+      },
+      "preview_template": {
+        "id": 1,
+        "command": "relation_preview",
+        "args": {
+          "kind": "Player",
+          "id": 0,
+          "operation": {
+            "action": "set_career_target",
+            "slot": 0,
+            "target": {
+              "object_type": 3,
+              "uid": 0
+            },
+            "condition": 1,
+            "scope": 1,
+            "job": 1
+          }
+        }
+      },
+      "notes": [
+        "Replace target and condition/scope/job of an existing supported career slot. Find target UID with career_targets."
+      ],
+      "replace_before_use": [
+        "args.kind and args.id: current Player/Staff/Person identity from search",
+        "operation slot/template_slot: current relation_detail result; relation rows and career.rows are separate",
+        "all zero target/donor/club/nation UIDs: actual verified semantic IDs, never memory addresses"
+      ]
+    },
+    {
+      "action": "set_social_relation",
+      "rust_variant": "SetSocialRelation",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "const": "set_social_relation"
+          },
+          "slot": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 18446744073709551615,
+            "description": "Rust usize on the Windows x64 engine. Use the exact current slot returned by relation_detail.",
+            "x-rust-type": "usize"
+          },
+          "relation_kind": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255,
+            "x-rust-type": "u8",
+            "enum": [
+              1,
+              2,
+              3,
+              4
+            ]
+          },
+          "target": {
+            "$ref": "#/$defs/EntityRef",
+            "x-rust-type": "Ref"
+          },
+          "reason": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 65535,
+            "x-rust-type": "u16"
+          },
+          "level": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "x-rust-type": "u8"
+          }
+        },
+        "required": [
+          "action",
+          "slot",
+          "relation_kind",
+          "target",
+          "reason",
+          "level"
+        ],
+        "additionalProperties": false
+      },
+      "preview_template": {
+        "id": 1,
+        "command": "relation_preview",
+        "args": {
+          "kind": "Player",
+          "id": 0,
+          "operation": {
+            "action": "set_social_relation",
+            "slot": 0,
+            "relation_kind": 3,
+            "target": {
+              "kind": "Club",
+              "id": 0
+            },
+            "reason": 1,
+            "level": 90
+          }
+        }
+      },
+      "notes": [
+        "Existing relation must be editable_social. Person relations cannot be changed into club relations in place; add a separate relation instead."
+      ],
+      "replace_before_use": [
+        "args.kind and args.id: current Player/Staff/Person identity from search",
+        "operation slot/template_slot: current relation_detail result; relation rows and career.rows are separate",
+        "all zero target/donor/club/nation UIDs: actual verified semantic IDs, never memory addresses"
+      ]
+    },
+    {
+      "action": "add_social_relation",
+      "rust_variant": "AddSocialRelation",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "const": "add_social_relation"
+          },
+          "relation_kind": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255,
+            "x-rust-type": "u8",
+            "enum": [
+              1,
+              2,
+              3,
+              4
+            ]
+          },
+          "target": {
+            "$ref": "#/$defs/EntityRef",
+            "x-rust-type": "Ref"
+          },
+          "reason": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 65535,
+            "x-rust-type": "u16"
+          },
+          "level": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "x-rust-type": "u8"
+          }
+        },
+        "required": [
+          "action",
+          "relation_kind",
+          "target",
+          "reason",
+          "level"
+        ],
+        "additionalProperties": false
+      },
+      "preview_template": {
+        "id": 1,
+        "command": "relation_preview",
+        "args": {
+          "kind": "Player",
+          "id": 0,
+          "operation": {
+            "action": "add_social_relation",
+            "relation_kind": 3,
+            "target": {
+              "kind": "Club",
+              "id": 0
+            },
+            "reason": 1,
+            "level": 90
+          }
+        }
+      },
+      "notes": [
+        "relation_kind determines target type and allowed reason. Own-person and duplicate relations are rejected."
+      ],
+      "replace_before_use": [
+        "args.kind and args.id: current Player/Staff/Person identity from search",
+        "operation slot/template_slot: current relation_detail result; relation rows and career.rows are separate",
+        "all zero target/donor/club/nation UIDs: actual verified semantic IDs, never memory addresses"
+      ]
+    },
+    {
+      "action": "delete_social_relation",
+      "rust_variant": "DeleteSocialRelation",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "const": "delete_social_relation"
+          },
+          "slot": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 18446744073709551615,
+            "description": "Rust usize on the Windows x64 engine. Use the exact current slot returned by relation_detail.",
+            "x-rust-type": "usize"
+          }
+        },
+        "required": [
+          "action",
+          "slot"
+        ],
+        "additionalProperties": false
+      },
+      "preview_template": {
+        "id": 1,
+        "command": "relation_preview",
+        "args": {
+          "kind": "Player",
+          "id": 0,
+          "operation": {
+            "action": "delete_social_relation",
+            "slot": 0
+          }
+        }
+      },
+      "notes": [
+        "Delete a currently editable social relation. Other rows are preserved."
+      ],
+      "replace_before_use": [
+        "args.kind and args.id: current Player/Staff/Person identity from search",
+        "operation slot/template_slot: current relation_detail result; relation rows and career.rows are separate",
+        "all zero target/donor/club/nation UIDs: actual verified semantic IDs, never memory addresses"
+      ]
+    },
+    {
+      "action": "set_career_details",
+      "rust_variant": "SetCareerDetails",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "const": "set_career_details"
+          },
+          "slot": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 18446744073709551615,
+            "description": "Rust usize on the Windows x64 engine. Use the exact current slot returned by relation_detail.",
+            "x-rust-type": "usize"
+          },
+          "condition": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255,
+            "x-rust-type": "u8",
+            "enum": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6
+            ]
+          },
+          "scope": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255,
+            "x-rust-type": "u8",
+            "enum": [
+              1,
+              2
+            ]
+          },
+          "job": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255,
+            "x-rust-type": "u8",
+            "enum": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              6,
+              8,
+              10,
+              12,
+              14,
+              16,
+              17,
+              20,
+              21,
+              22,
+              24,
+              26,
+              27,
+              34,
+              35,
+              38,
+              40,
+              44,
+              45,
+              46,
+              48,
+              50,
+              52,
+              58,
+              60,
+              61,
+              62,
+              64,
+              66,
+              70,
+              86,
+              88,
+              89,
+              144
+            ]
+          }
+        },
+        "required": [
+          "action",
+          "slot",
+          "condition",
+          "scope",
+          "job"
+        ],
+        "additionalProperties": false
+      },
+      "preview_template": {
+        "id": 1,
+        "command": "relation_preview",
+        "args": {
+          "kind": "Player",
+          "id": 0,
+          "operation": {
+            "action": "set_career_details",
+            "slot": 0,
+            "condition": 1,
+            "scope": 1,
+            "job": 1
+          }
+        }
+      },
+      "notes": [
+        "Retain the target and change condition/scope/job of a current career slot with editable_details=true."
+      ],
+      "replace_before_use": [
+        "args.kind and args.id: current Player/Staff/Person identity from search",
+        "operation slot/template_slot: current relation_detail result; relation rows and career.rows are separate",
+        "all zero target/donor/club/nation UIDs: actual verified semantic IDs, never memory addresses"
+      ]
+    },
+    {
+      "action": "add_career_club",
+      "rust_variant": "AddCareerClub",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "const": "add_career_club"
+          },
+          "club_id": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295,
+            "x-rust-type": "u32"
+          },
+          "condition": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255,
+            "x-rust-type": "u8",
+            "enum": [
+              1,
+              2
+            ]
+          },
+          "job": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255,
+            "x-rust-type": "u8",
+            "enum": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              6,
+              8,
+              10,
+              12,
+              14,
+              16,
+              17,
+              20,
+              21,
+              22,
+              24,
+              26,
+              27,
+              34,
+              35,
+              38,
+              40,
+              44,
+              45,
+              46,
+              48,
+              50,
+              52,
+              58,
+              60,
+              61,
+              62,
+              64,
+              66,
+              70,
+              86,
+              88,
+              89,
+              144
+            ]
+          }
+        },
+        "required": [
+          "action",
+          "club_id",
+          "condition",
+          "job"
+        ],
+        "additionalProperties": false
+      },
+      "preview_template": {
+        "id": 1,
+        "command": "relation_preview",
+        "args": {
+          "kind": "Player",
+          "id": 0,
+          "operation": {
+            "action": "add_career_club",
+            "club_id": 0,
+            "condition": 1,
+            "job": 1
+          }
+        }
+      },
+      "notes": [
+        "Legacy club-only creation path. Prefer add_career_target for general native creation. Fixed club scope; available storage is validated.",
+        "Legacy condition accepts only1(want) or2(do not want), and uses club scope1. General target/detail operations support conditions1–6."
+      ],
+      "replace_before_use": [
+        "args.kind and args.id: current Player/Staff/Person identity from search",
+        "operation slot/template_slot: current relation_detail result; relation rows and career.rows are separate",
+        "all zero target/donor/club/nation UIDs: actual verified semantic IDs, never memory addresses"
+      ]
+    },
+    {
+      "action": "delete_career_plan",
+      "rust_variant": "DeleteCareerPlan",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "const": "delete_career_plan"
+          },
+          "slot": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 18446744073709551615,
+            "description": "Rust usize on the Windows x64 engine. Use the exact current slot returned by relation_detail.",
+            "x-rust-type": "usize"
+          }
+        },
+        "required": [
+          "action",
+          "slot"
+        ],
+        "additionalProperties": false
+      },
+      "preview_template": {
+        "id": 1,
+        "command": "relation_preview",
+        "args": {
+          "kind": "Player",
+          "id": 0,
+          "operation": {
+            "action": "delete_career_plan",
+            "slot": 0
+          }
+        }
+      },
+      "notes": [
+        "Use a career.rows slot with can_delete=true. Unknown target types may be deletable even if not editable."
+      ],
+      "replace_before_use": [
+        "args.kind and args.id: current Player/Staff/Person identity from search",
+        "operation slot/template_slot: current relation_detail result; relation rows and career.rows are separate",
+        "all zero target/donor/club/nation UIDs: actual verified semantic IDs, never memory addresses"
+      ]
+    },
+    {
+      "action": "delete_favourite_club",
+      "rust_variant": "DeleteFavouriteClub",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "const": "delete_favourite_club"
+          },
+          "slot": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 18446744073709551615,
+            "description": "Rust usize on the Windows x64 engine. Use the exact current slot returned by relation_detail.",
+            "x-rust-type": "usize"
+          }
+        },
+        "required": [
+          "action",
+          "slot"
+        ],
+        "additionalProperties": false
+      },
+      "preview_template": {
+        "id": 1,
+        "command": "relation_preview",
+        "args": {
+          "kind": "Player",
+          "id": 0,
+          "operation": {
+            "action": "delete_favourite_club",
+            "slot": 0
+          }
+        }
+      },
+      "notes": [
+        "Use a relation rows slot with editable_favourite=true."
+      ],
+      "replace_before_use": [
+        "args.kind and args.id: current Player/Staff/Person identity from search",
+        "operation slot/template_slot: current relation_detail result; relation rows and career.rows are separate",
+        "all zero target/donor/club/nation UIDs: actual verified semantic IDs, never memory addresses"
+      ]
+    },
+    {
+      "action": "delete_secondary_nationality",
+      "rust_variant": "DeleteSecondaryNationality",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "const": "delete_secondary_nationality"
+          },
+          "slot": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 18446744073709551615,
+            "description": "Rust usize on the Windows x64 engine. Use the exact current slot returned by relation_detail.",
+            "x-rust-type": "usize"
+          }
+        },
+        "required": [
+          "action",
+          "slot"
+        ],
+        "additionalProperties": false
+      },
+      "preview_template": {
+        "id": 1,
+        "command": "relation_preview",
+        "args": {
+          "kind": "Player",
+          "id": 0,
+          "operation": {
+            "action": "delete_secondary_nationality",
+            "slot": 0
+          }
+        }
+      },
+      "notes": [
+        "Use a relation rows slot with editable_secondary_nationality=true. Primary nationality is not changed."
+      ],
+      "replace_before_use": [
+        "args.kind and args.id: current Player/Staff/Person identity from search",
+        "operation slot/template_slot: current relation_detail result; relation rows and career.rows are separate",
+        "all zero target/donor/club/nation UIDs: actual verified semantic IDs, never memory addresses"
+      ]
+    },
+    {
+      "action": "set_career_club",
+      "rust_variant": "SetCareerClub",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "const": "set_career_club"
+          },
+          "slot": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 18446744073709551615,
+            "description": "Rust usize on the Windows x64 engine. Use the exact current slot returned by relation_detail.",
+            "x-rust-type": "usize"
+          },
+          "club_id": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295,
+            "x-rust-type": "u32"
+          },
+          "condition": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255,
+            "x-rust-type": "u8",
+            "enum": [
+              1,
+              2
+            ]
+          },
+          "job": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255,
+            "x-rust-type": "u8",
+            "enum": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              6,
+              8,
+              10,
+              12,
+              14,
+              16,
+              17,
+              20,
+              21,
+              22,
+              24,
+              26,
+              27,
+              34,
+              35,
+              38,
+              40,
+              44,
+              45,
+              46,
+              48,
+              50,
+              52,
+              58,
+              60,
+              61,
+              62,
+              64,
+              66,
+              70,
+              86,
+              88,
+              89,
+              144
+            ]
+          }
+        },
+        "required": [
+          "action",
+          "slot",
+          "club_id",
+          "condition",
+          "job"
+        ],
+        "additionalProperties": false
+      },
+      "preview_template": {
+        "id": 1,
+        "command": "relation_preview",
+        "args": {
+          "kind": "Player",
+          "id": 0,
+          "operation": {
+            "action": "set_career_club",
+            "slot": 0,
+            "club_id": 0,
+            "condition": 1,
+            "job": 1
+          }
+        }
+      },
+      "notes": [
+        "Legacy club-only target/condition/job update. Prefer set_career_target when changing scope or target type.",
+        "Legacy condition accepts only1(want) or2(do not want), and uses club scope1. General target/detail operations support conditions1–6."
+      ],
+      "replace_before_use": [
+        "args.kind and args.id: current Player/Staff/Person identity from search",
+        "operation slot/template_slot: current relation_detail result; relation rows and career.rows are separate",
+        "all zero target/donor/club/nation UIDs: actual verified semantic IDs, never memory addresses"
+      ]
+    },
+    {
+      "action": "set_favourite_club",
+      "rust_variant": "SetFavouriteClub",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "const": "set_favourite_club"
+          },
+          "slot": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 18446744073709551615,
+            "description": "Rust usize on the Windows x64 engine. Use the exact current slot returned by relation_detail.",
+            "x-rust-type": "usize"
+          },
+          "club_id": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295,
+            "x-rust-type": "u32"
+          },
+          "reason": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4,
+            "x-rust-type": "u16"
+          },
+          "level": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "x-rust-type": "u8"
+          }
+        },
+        "required": [
+          "action",
+          "slot",
+          "club_id",
+          "reason",
+          "level"
+        ],
+        "additionalProperties": false
+      },
+      "preview_template": {
+        "id": 1,
+        "command": "relation_preview",
+        "args": {
+          "kind": "Player",
+          "id": 0,
+          "operation": {
+            "action": "set_favourite_club",
+            "slot": 0,
+            "club_id": 0,
+            "reason": 1,
+            "level": 90
+          }
+        }
+      },
+      "notes": [
+        "reason 0–4, level 0–100. Target club must be obtained from search."
+      ],
+      "replace_before_use": [
+        "args.kind and args.id: current Player/Staff/Person identity from search",
+        "operation slot/template_slot: current relation_detail result; relation rows and career.rows are separate",
+        "all zero target/donor/club/nation UIDs: actual verified semantic IDs, never memory addresses"
+      ]
+    },
+    {
+      "action": "add_favourite_club",
+      "rust_variant": "AddFavouriteClub",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "const": "add_favourite_club"
+          },
+          "template_slot": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 18446744073709551615,
+                "description": "Rust usize on the Windows x64 engine. Use the exact current slot returned by relation_detail."
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "x-rust-type": "Option<usize>"
+          },
+          "club_id": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295,
+            "x-rust-type": "u32"
+          },
+          "reason": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4,
+            "x-rust-type": "u16"
+          },
+          "level": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "x-rust-type": "u8"
+          }
+        },
+        "required": [
+          "action",
+          "club_id",
+          "reason",
+          "level"
+        ],
+        "additionalProperties": false
+      },
+      "preview_template": {
+        "id": 1,
+        "command": "relation_preview",
+        "args": {
+          "kind": "Player",
+          "id": 0,
+          "operation": {
+            "action": "add_favourite_club",
+            "template_slot": null,
+            "club_id": 0,
+            "reason": 1,
+            "level": 90
+          }
+        }
+      },
+      "notes": [
+        "template_slot is optional/null. Omit it to use the native default record; when supplied it must identify a valid current favourite-club template."
+      ],
+      "replace_before_use": [
+        "args.kind and args.id: current Player/Staff/Person identity from search",
+        "operation slot/template_slot: current relation_detail result; relation rows and career.rows are separate",
+        "all zero target/donor/club/nation UIDs: actual verified semantic IDs, never memory addresses"
+      ]
+    },
+    {
+      "action": "set_secondary_nationality",
+      "rust_variant": "SetSecondaryNationality",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "const": "set_secondary_nationality"
+          },
+          "slot": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 18446744073709551615,
+            "description": "Rust usize on the Windows x64 engine. Use the exact current slot returned by relation_detail.",
+            "x-rust-type": "usize"
+          },
+          "donor": {
+            "$ref": "#/$defs/EntityRef",
+            "x-rust-type": "Ref"
+          },
+          "expected_nation_uid": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295,
+            "x-rust-type": "u32"
+          }
+        },
+        "required": [
+          "action",
+          "slot",
+          "donor",
+          "expected_nation_uid"
+        ],
+        "additionalProperties": false
+      },
+      "preview_template": {
+        "id": 1,
+        "command": "relation_preview",
+        "args": {
+          "kind": "Player",
+          "id": 0,
+          "operation": {
+            "action": "set_secondary_nationality",
+            "slot": 0,
+            "donor": {
+              "kind": "Player",
+              "id": 0
+            },
+            "expected_nation_uid": 0
+          }
+        }
+      },
+      "notes": [
+        "Donor is an existing person whose primary nationality equals expected_nation_uid. This does not set homegrown/registration/representative eligibility."
+      ],
+      "replace_before_use": [
+        "args.kind and args.id: current Player/Staff/Person identity from search",
+        "operation slot/template_slot: current relation_detail result; relation rows and career.rows are separate",
+        "all zero target/donor/club/nation UIDs: actual verified semantic IDs, never memory addresses"
+      ]
+    },
+    {
+      "action": "add_secondary_nationality",
+      "rust_variant": "AddSecondaryNationality",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "const": "add_secondary_nationality"
+          },
+          "donor": {
+            "$ref": "#/$defs/EntityRef",
+            "x-rust-type": "Ref"
+          },
+          "expected_nation_uid": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295,
+            "x-rust-type": "u32"
+          }
+        },
+        "required": [
+          "action",
+          "donor",
+          "expected_nation_uid"
+        ],
+        "additionalProperties": false
+      },
+      "preview_template": {
+        "id": 1,
+        "command": "relation_preview",
+        "args": {
+          "kind": "Player",
+          "id": 0,
+          "operation": {
+            "action": "add_secondary_nationality",
+            "donor": {
+              "kind": "Player",
+              "id": 0
+            },
+            "expected_nation_uid": 0
+          }
+        }
+      },
+      "notes": [
+        "Donor is an existing person whose primary nationality equals expected_nation_uid. Existing nationalities are preserved; duplicates rejected."
+      ],
+      "replace_before_use": [
+        "args.kind and args.id: current Player/Staff/Person identity from search",
+        "operation slot/template_slot: current relation_detail result; relation rows and career.rows are separate",
+        "all zero target/donor/club/nation UIDs: actual verified semantic IDs, never memory addresses"
+      ]
+    },
+    {
+      "action": "reuse_name",
+      "rust_variant": "ReuseName",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "const": "reuse_name"
+          },
+          "field": {
+            "type": "string",
+            "enum": [
+              "first",
+              "last",
+              "common"
+            ],
+            "x-rust-type": "engine::NameField"
+          },
+          "donor": {
+            "$ref": "#/$defs/EntityRef",
+            "x-rust-type": "Ref"
+          }
+        },
+        "required": [
+          "action",
+          "field",
+          "donor"
+        ],
+        "additionalProperties": false
+      },
+      "preview_template": {
+        "id": 1,
+        "command": "relation_preview",
+        "args": {
+          "kind": "Player",
+          "id": 0,
+          "operation": {
+            "action": "reuse_name",
+            "field": "common",
+            "donor": {
+              "kind": "Player",
+              "id": 0
+            }
+          }
+        }
+      },
+      "notes": [
+        "Reuse an existing database first/last/common name from donor. This is not a free-text name change; use name_localization_preview for Korean display-name files."
+      ],
+      "replace_before_use": [
+        "args.kind and args.id: current Player/Staff/Person identity from search",
+        "operation slot/template_slot: current relation_detail result; relation rows and career.rows are separate",
+        "all zero target/donor/club/nation UIDs: actual verified semantic IDs, never memory addresses"
+      ]
+    }
+  ],
+  "event_draft": {
+    "schema": {
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "No control characters. Title must not be whitespace-only.",
+          "x-rust-type": "String",
+          "default": "새로운 10년을 여는 파트너십"
+        },
+        "sponsor_name": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "No control characters. Title must not be whitespace-only.",
+          "x-rust-type": "String",
+          "default": "SAMSUNG"
+        },
+        "city_project": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "No control characters. Title must not be whitespace-only.",
+          "x-rust-type": "String",
+          "default": "지역 연구개발 거점 조성"
+        },
+        "annual_gbp": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2000000000,
+          "description": "Native GBP; independent grants are not inferred from sponsorship.",
+          "x-rust-type": "i64",
+          "default": 26653522
+        },
+        "years": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 30,
+          "x-rust-type": "u16",
+          "default": 10
+        },
+        "krw_per_gbp": {
+          "anyOf": [
+            {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "maximum": 1000000
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional display conversion provided by caller; not a live save exchange rate.",
+          "x-rust-type": "Option<f64>",
+          "default": null
+        },
+        "sponsor_slot": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615,
+              "description": "Rust usize on the Windows x64 engine. Use the exact current slot returned by relation_detail."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Existing event_context.sponsors slot. Required if annual_gbp>0; no new sponsor allocation.",
+          "x-rust-type": "Option<usize>",
+          "default": null
+        },
+        "cash_grant_gbp": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2000000000,
+          "description": "Native GBP; independent grants are not inferred from sponsorship.",
+          "x-rust-type": "i64",
+          "default": 0
+        },
+        "transfer_budget_grant_gbp": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2000000000,
+          "description": "Native GBP; independent grants are not inferred from sponsorship.",
+          "x-rust-type": "i64",
+          "default": 0
+        },
+        "weekly_wage_increase_gbp": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2000000000,
+          "description": "Native GBP; independent grants are not inferred from sponsorship.",
+          "x-rust-type": "i64",
+          "default": 0
+        },
+        "population_band": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 15
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "x-rust-type": "Option<u8>",
+          "default": null
+        },
+        "attraction": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 20
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "x-rust-type": "Option<u8>",
+          "default": null
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "field_count": 12,
+    "partial_merge": "event_preview merges omitted draft fields with EventDraft defaults. Query event_context.draft_defaults for current values. Explicitly set annual_gbp=0 for grants/city-only operations.",
+    "notes": [
+      "Money is GBP. annual_gbp>0 requires nonempty sponsor_name and an existing sponsor_slot from event_context.",
+      "annual_gbp * years must fit the validated native i32 total. Each resulting scalar balance/budget must remain within its field limits.",
+      "cash, transfer and weekly wage grants are separate additions; sponsorship total is not automatically added to cash.",
+      "population_band and attraction are absolute targets, not increments. City population is a band, not a head count.",
+      "Company names, titles and project names are local narrative text. This API does not insert FM news.",
+      "Zero-change plans may be rejected. Preview only; game saving remains separate."
+    ],
+    "city_only_preview_template": {
+      "id": 1,
+      "command": "event_preview",
+      "args": {
+        "club_id": 0,
+        "draft": {
+          "title": "지역 개발 예시",
+          "annual_gbp": 0,
+          "sponsor_slot": null,
+          "cash_grant_gbp": 0,
+          "transfer_budget_grant_gbp": 0,
+          "weekly_wage_increase_gbp": 0,
+          "population_band": null,
+          "attraction": 17
+        }
+      }
+    },
+    "grant_only_preview_template": {
+      "id": 1,
+      "command": "event_preview",
+      "args": {
+        "club_id": 0,
+        "draft": {
+          "title": "구단 지원 예시",
+          "annual_gbp": 0,
+          "sponsor_slot": null,
+          "cash_grant_gbp": 1000000,
+          "transfer_budget_grant_gbp": 1000000,
+          "weekly_wage_increase_gbp": 0,
+          "population_band": null,
+          "attraction": null
+        }
+      }
+    }
+  },
+  "validation": {
+    "method": "JSON parse plus field/type/variant inspection against current Rust source; no game write or API apply performed",
+    "operation_count": 16,
+    "event_field_count": 12,
+    "source_sha256": {
+      "src/bridge/relations.rs": "00b83ef8a104fbe3a924408ea23c33a575395402c0a46b0f2933ed4564e8cbbe",
+      "src/events.rs": "dfa76e9cb692483d7c04c43b6df4c93aa7b6da15d07225f636359985ab674b6b",
+      "src/relations/targets.rs": "ff31fe21483b0a8719927068b8ce542c6e4a28f0d730c57ce5898131ddf78e01",
+      "src/workspace.rs": "84ee3efb8c68f0a1299049f2122b9962b0d1bfdbbfb66239618fec94c445e147",
+      "src/relations.rs": "ee428d529f2a44a6d3a7fcc9cd439a91ba8c62ea2db48caa2b1b7542c4b23d78"
+    }
+  }
+}
