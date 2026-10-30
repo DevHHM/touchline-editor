@@ -1,0 +1,28 @@
+name: Import reviewed source (one-time)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: touchline-reviewed-source-import
+  cancel-in-progress: false
+
+jobs:
+  import:
+    if: github.repository == 'DevHHM/touchline-editor' && github.actor == github.repository_owner && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out the main branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: main
+          persist-credentials: true
+      - name: Verify and import the reviewed source archive
+        shell: bash
+        run: |
+          printf '%s\n' '49ff7d1096568832e8874a52200a61580d8aa27777b2c3f67f23fcf9cd79ddc9  import-source.py' | sha256sum --check --strict -
+          python3 import-source.py
