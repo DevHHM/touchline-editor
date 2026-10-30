@@ -1,0 +1,5 @@
+{
+  "ingest_url": "https://touchline-diagnostics-collector.touchline-diagnostics-collector.workers.dev/v1/reports",
+  "privacy_url": "https://touchline-diagnostics-collector.touchline-diagnostics-collector.workers.dev/privacy",
+  "destination": "public"
+}

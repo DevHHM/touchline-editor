@@ -29,6 +29,7 @@ public sealed class LiveReloadState
  public long? SessionGeneration { get; private set; }
  public void Enable() { Enabled = true; Invalidated = false; Generation = SessionGeneration = null; }
  public void Disable() { Enabled = false; Invalidated = false; Generation = SessionGeneration = null; }
+ public void InvalidateView() { if(Enabled) Invalidated=true; }
  public LiveReloadDecision Observe(LiveConnectionObservation value)
  {
   if (!Enabled) return default;
@@ -38,7 +39,7 @@ public sealed class LiveReloadState
   bool different = SessionGeneration.HasValue && value.SessionGeneration.HasValue && SessionGeneration.Value != value.SessionGeneration.Value;
   Generation = value.Generation;
   SessionGeneration = value.SessionGeneration;
-  bool unavailable = value.State is "loading" or "waiting" or "ready";
+  bool unavailable = value.State is "loading" or "waiting" or "ready" or "error" or "unsupported_build";
   bool invalidate = !Invalidated && value.State != "reconnected" && (value.Changed || different || unavailable);
   if (invalidate) Invalidated = true;
   bool reconnect = value.State == "ready" && value.CanReconnect;

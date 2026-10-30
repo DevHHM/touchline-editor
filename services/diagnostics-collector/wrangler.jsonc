@@ -1,0 +1,15 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "touchline-diagnostics-collector",
+  "main": "src/entry.js",
+  "compatibility_date": "2026-10-30",
+  "workers_dev": true,
+  // No platform request/body logs. The application never console.logs requests.
+  "observability": { "enabled": false },
+  "durable_objects": {
+    "bindings": [{ "name": "DIAGNOSTICS", "class_name": "DiagnosticsQueue" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["DiagnosticsQueue"] }]
+  // Required server-only secrets: GITHUB_TOKEN, RATE_LIMIT_SECRET (>=32 chars).
+  // The repository is fixed in source; clients cannot choose issue destinations.
+}

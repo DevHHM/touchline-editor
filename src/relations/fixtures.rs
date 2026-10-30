@@ -351,6 +351,7 @@ pub(crate) fn data() -> (Index, Vec<Detail>, Vec<PersonRelations>) {
         })
         .collect();
     let index = Index {
+        club_leagues: Vec::new(),
         session: Session {
             pid: 0,
             created: 0,

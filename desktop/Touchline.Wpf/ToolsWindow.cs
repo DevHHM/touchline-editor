@@ -95,7 +95,8 @@ public sealed class ToolsWindow : Window
         else if (mode == "history") BuildHistory();
         else BuildOverlay(staff);
         Loaded += async (_, _) => await RunAsync(mode == "events" ? LoadEventContextAsync : mode == "history" ? LoadHistoryAsync : () => Task.CompletedTask);
-        Closed += (_, _) => { _closing.Cancel(); _overlay?.Close(); };
+        AbilityVisibility.Current.Changed += AbilityVisibilityChanged;
+        Closed += (_, _) => { AbilityVisibility.Current.Changed -= AbilityVisibilityChanged; _closing.Cancel(); _overlay?.Close(); };
     }
 
     private static Brush Brush(string key, string fallback) => Application.Current?.TryFindResource(key) as Brush ?? new SolidColorBrush((Color)ColorConverter.ConvertFromString(fallback));
@@ -291,6 +292,32 @@ public sealed class ToolsWindow : Window
         await LoadHistoryAsync(); RefreshButtons();
         return new { scalar_and_event_history_loaded = true, relation_history_loaded = true, receipt_count = _receipts.Count, undo_disabled_offline = _undoButton is { IsEnabled: false }, game_accessed = false, game_modified = false };
     }
+    public async Task<object> QaAbilityVisibilityAsync()
+    {
+        if (_mode != "history" || _live || _history == null) throw new InvalidOperationException("능력치 표시 QA는 스냅샷 기록 창에서 실행합니다.");
+        var deadline = DateTime.UtcNow.AddSeconds(30);
+        while (_busy && DateTime.UtcNow < deadline) await Task.Delay(50, _closing.Token);
+        if (_busy) throw new TimeoutException("변경 기록 로딩 시간이 초과되었습니다.");
+        bool originalCa = AbilityVisibility.Current.HideCa, originalPa = AbilityVisibility.Current.HidePa;
+        var originalItems = _history.ItemsSource; object? originalSelection = _history.SelectedItem;
+        using var sample = JsonDocument.Parse("{\"changes\":[{\"key\":\"ca\",\"label\":\"CA\",\"before\":73,\"after\":74},{\"key\":\"pa\",\"label\":\"PA\",\"before\":182,\"after\":183}]}");
+        var row = new ReceiptRow("ability-visibility-qa", "", "능력치", "QA", "applied", false, false, sample.RootElement.Clone());
+        var reports = new List<object>();
+        try
+        {
+            _history.ItemsSource = new[] { row }; _history.SelectedItem = row;
+            foreach (var (hideCa, hidePa) in new[] { (true, false), (false, true), (true, true), (false, false) })
+            {
+                AbilityVisibility.Current.Set(hideCa, hidePa);
+                await Dispatcher.InvokeAsync(UpdateLayout);
+                string expected = $"CA: {(hideCa ? "숨김" : "73")} → {(hideCa ? "숨김" : "74")}\nPA: {(hidePa ? "숨김" : "182")} → {(hidePa ? "숨김" : "183")}";
+                if (_narrative.Text != expected || _undoButton?.IsEnabled == true) throw new InvalidOperationException("기록의 이전/이후 수치 숨김 또는 스냅샷 보호가 올바르지 않습니다.");
+                reports.Add(new { hideCa, hidePa, beforeAndAfterMasked = true, offlineUndoDisabled = true });
+            }
+            return new { success = true, gameWrites = false, reports };
+        }
+        finally { _history.ItemsSource = originalItems; _history.SelectedItem = originalSelection; AbilityVisibility.Current.Set(originalCa, originalPa); if (originalSelection != null) ShowReceipt(); else _narrative.Text = "기록을 선택하면 적용한 값을 확인할 수 있습니다."; }
+    }
     private void InvalidatePreview()
     {
         if (_loading) return;
@@ -344,18 +371,24 @@ public sealed class ToolsWindow : Window
             _narrative.Text = string.Join("\n", Array(plan, "deltas").Select(x => $"{Str(x, "label")}: {Str(x, "before")} → {Str(x, "after")}")) + "\n\n" + Str(plan, "narrative");
         }
         else if(row.IsRelation) _narrative.Text=Str(r,"summary")+"\n\n"+Str(r,"before")+"  →  "+Str(r,"after");
-        else _narrative.Text = string.Join("\n", Array(r, "changes").Select(x => $"{Str(x, "label")}: {Str(x, "before")} → {Str(x, "after")}"));
+        else _narrative.Text = string.Join("\n", Array(r, "changes").Select(x => $"{Str(x, "label")}: {AbilityVisibility.Current.Format(Str(x, "key"), Str(x, "before"))} → {AbilityVisibility.Current.Format(Str(x, "key"), Str(x, "after"))}"));
         RefreshButtons();
     }
+    private void AbilityVisibilityChanged(object? sender, EventArgs args)
+    {
+        if (!Dispatcher.CheckAccess()) { Dispatcher.Invoke(() => AbilityVisibilityChanged(sender, args)); return; }
+        if (_mode == "history") ShowReceipt();
+    }
+    private static bool HasHiddenChanges(ReceiptRow row) => !row.IsEvent && !row.IsRelation && Array(row.Raw, "changes").Any(change => AbilityVisibility.Current.IsHidden(Str(change, "key")));
     private async Task UndoAsync()
     {
-        if (!_live || _history?.SelectedItem is not ReceiptRow row || (row.IsRelation && !Bool(row.Raw,"can_undo"))) return;
+        if (!_live || _history?.SelectedItem is not ReceiptRow row || HasHiddenChanges(row) || (row.IsRelation && !Bool(row.Raw,"can_undo"))) return;
         if (AppDialog.Show(this, $"{row.Target}\n기록 {row.Id}\n\n이 기록에 포함된 변경을 되돌릴까요? 현재 값이 이후에 바뀌었다면 중단됩니다.", "변경 되돌리기", MessageBoxButton.OKCancel, MessageBoxImage.Question) != MessageBoxResult.OK) return;
         await UndoReviewedAsync(row);
     }
     private async Task UndoReviewedAsync(ReceiptRow row)
     {
-        if (_connectionInvalidated || !_live || !ReferenceEquals(_history?.SelectedItem, row) || (row.IsRelation && !Bool(row.Raw,"can_undo"))) return;
+        if (_connectionInvalidated || !_live || HasHiddenChanges(row) || !ReferenceEquals(_history?.SelectedItem, row) || (row.IsRelation && !Bool(row.Raw,"can_undo"))) return;
         if (BeforeUndo != null && !await BeforeUndo()) return;
         try
         {
@@ -411,7 +444,7 @@ public sealed class ToolsWindow : Window
         if (_previewButton is not null) _previewButton.IsEnabled = !_busy && _clubId.HasValue;
         if (_saveButton is not null) _saveButton.IsEnabled = !_busy && !string.IsNullOrEmpty(_token);
         if (_applyButton is not null) _applyButton.IsEnabled = !_busy && _live && _canApply && !string.IsNullOrEmpty(_token);
-        if (_undoButton is not null) _undoButton.IsEnabled = !_busy && _live && _history?.SelectedItem is ReceiptRow row && row.Status.StartsWith("applied", StringComparison.OrdinalIgnoreCase) && (!row.IsRelation || Bool(row.Raw,"can_undo"));
+        if (_undoButton is not null) _undoButton.IsEnabled = !_busy && _live && _history?.SelectedItem is ReceiptRow row && !HasHiddenChanges(row) && row.Status.StartsWith("applied", StringComparison.OrdinalIgnoreCase) && (!row.IsRelation || Bool(row.Raw,"can_undo"));
         if (_overlayStartButton is not null) _overlayStartButton.IsEnabled = !_busy && _live && _overlayStaff is not null;
         if (_overlayStopButton is not null) _overlayStopButton.IsEnabled = !_busy && _overlay is not null;
     }
@@ -422,5 +455,8 @@ public sealed class ToolsWindow : Window
     private static IEnumerable<JsonElement> Array(JsonElement e, string name) => e.ValueKind == JsonValueKind.Object && e.TryGetProperty(name, out var a) && a.ValueKind == JsonValueKind.Array ? a.EnumerateArray() : Enumerable.Empty<JsonElement>();
     private sealed record SponsorOption(int? Slot, string Label);
     private sealed record ChangeRow(string Section, string Label, string Before, string After);
-    private sealed record ReceiptRow(string Id, string Time, string Type, string Target, string Status, bool IsEvent, bool IsRelation, JsonElement Raw);
+    private sealed record ReceiptRow(string Id, string Time, string Type, string Target, string Status, bool IsEvent, bool IsRelation, JsonElement Raw)
+    {
+        public override string ToString() => $"{Time} · {Type} · {Target} · {Status}";
+    }
 }

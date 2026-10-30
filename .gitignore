@@ -8,9 +8,13 @@
 /desktop/**/bin/
 /desktop/**/obj/
 
-# Local credentials, editor state, personal saves and compiled artifacts
+# Local credentials, telemetry state, saves and compiled artifacts
 .env
 .env.*
+.dev.vars
+.dev.vars.*
+**/node_modules/
+**/.wrangler/
 *.pdb
 *.fm
 *.dmp

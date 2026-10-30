@@ -79,6 +79,8 @@ try {
     if (-not $SkipTests) {
         & $dotnetPath @clientTestArguments
         Assert-NativeSuccess 'Native client tests'
+        & $dotnetPath run --project 'desktop\Touchline.UpdaterTests\Touchline.UpdaterTests.csproj' --configuration Release
+        Assert-NativeSuccess 'Offline updater safety tests'
     }
 
     # Restore the Windows runtime explicitly. The lock file records this resolved
@@ -90,11 +92,26 @@ try {
     & $dotnetPath publish $uiProject --configuration Release --runtime win-x64 --self-contained true --no-restore --output $appDir -p:PublishSingleFile=false -p:PublishTrimmed=false -p:DebugType=None -p:DebugSymbols=false "-p:PathMap=$projectRoot=/touchline"
     Assert-NativeSuccess 'WPF self-contained publish'
 
+    # The helper must run outside app/ while that entire folder is replaced.
+    # Ship a self-contained single executable and copy it to the update job on exit.
+    $updaterProject = Join-Path $projectRoot 'desktop\Touchline.Updater\Touchline.Updater.csproj'
+    $updaterOutput = Join-Path $projectRoot ("output\updater-publish-$packageVersion-" + [Guid]::NewGuid().ToString('N'))
+    & $dotnetPath publish $updaterProject --configuration Release --runtime win-x64 --self-contained true --output $updaterOutput -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false "-p:Version=$packageVersion" "-p:PathMap=$projectRoot=/touchline"
+    Assert-NativeSuccess 'Self-contained updater publish'
+    Copy-RequiredFile (Join-Path $updaterOutput 'Touchline Updater.exe') (Join-Path $appDir 'Touchline Updater.exe')
+    $helperCheck = Start-Process -FilePath (Join-Path $appDir 'Touchline Updater.exe') -ArgumentList '--helper-check' -WindowStyle Hidden -Wait -PassThru
+    if ($helperCheck.ExitCode -ne 0) { throw 'Packaged updater helper check failed.' }
+
     Copy-RequiredFile $enginePath (Join-Path $engineDir 'Touchline Engine.exe')
     & (Join-Path $projectRoot 'tools\build-launcher.ps1') -OutputDirectory $packageDir -Version $packageVersion
     Copy-RequiredFile (Join-Path $projectRoot 'distribution\README.txt') (Join-Path $packageDir 'README.txt')
-    foreach ($name in @('QUICKSTART.ko.md', 'SUPPORT.ko.md', 'VERIFICATION.ko.md', 'Verify-Package.ps1')) {
+    Copy-RequiredFile (Join-Path $projectRoot 'distribution\diagnostics-collector.json') (Join-Path $appDir 'diagnostics-collector.json')
+    foreach ($name in @('QUICKSTART.ko.md', 'SUPPORT.ko.md', 'VERIFICATION.ko.md', 'UPDATES.ko.md', 'DIAGNOSTICS.ko.md', 'Verify-Package.ps1')) {
         Copy-RequiredFile (Join-Path $projectRoot "distribution\$name") (Join-Path $docsDir $name)
+    }
+    $releaseNotes = Join-Path $projectRoot "distribution\RELEASE-$packageVersion.ko.md"
+    if (Test-Path -LiteralPath $releaseNotes -PathType Leaf) {
+        Copy-RequiredFile $releaseNotes (Join-Path $docsDir 'RELEASE.ko.md')
     }
     Copy-RequiredFile (Join-Path $projectRoot 'tools\touchline_api.py') (Join-Path $apiDir 'touchline_api.py')
     Copy-RequiredFile (Join-Path $projectRoot 'distribution\start-api.ps1') (Join-Path $apiDir 'start-api.ps1')
@@ -214,6 +231,8 @@ try {
         webview_required = $false
         game_modified_during_build = $false
         layout = 'app-engine-v1'
+        updater = 'github-release-sha256-v1'
+        update_repository = 'DevHHM/touchline-editor'
         tests_run_by_builder = (-not $SkipTests)
         engine_built_by_builder = (-not $SkipEngineBuild)
         engine_imports = $engineImports

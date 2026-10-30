@@ -50,7 +50,7 @@ public sealed class StaffReviewRow
  [JsonPropertyName("components")] public List<StaffReviewComponent> Components { get; set; } = [];
  [JsonPropertyName("alternatives")] public List<StaffReviewCandidate> Alternatives { get; set; } = [];
  public string Name => Person.DisplayName;
- public string CaText => Person.Ca?.ToString(CultureInfo.InvariantCulture) ?? "—";
+ public string CaText => AbilityVisibility.Current.Format("ca", Person.Ca);
  public string ScoreText => StaffReviewFormat.Number(Score, "0.#");
  public string ReputationText => StaffReviewFormat.Number(Reputation);
  public string ReasonSummary => string.Join(" · ", Reasons);

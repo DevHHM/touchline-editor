@@ -15,7 +15,7 @@ public partial class MainWindow
  private Window? _scalarReviewWindow;
  private LiveReloadContext? _reloadContext;
  private string? _reloadDraftPath;
- private sealed record LiveReloadContext(string Kind, uint? EntityId, string Tab, bool SearchVisible, SearchReloadState? Search);
+ private sealed record LiveReloadContext(string Kind, uint? EntityId, string Tab, bool SearchVisible, SearchReloadState? Search, bool LeagueVisible, bool LeagueOrigin, LeagueBrowserState? League);
 
  private void InitializeLiveWatch() => _liveWatchTimer.Tick += async (_, _) => await PollLiveConnectionAsync();
  private void EnableLiveWatch()
@@ -33,12 +33,15 @@ public partial class MainWindow
   try
   {
    var observation = Decode<LiveConnectionObservation>(await _bridge.CallAsync("connection_poll")) ?? throw new InvalidDataException("연결 상태 응답을 읽을 수 없습니다.");
+   LogConnectionState(observation.State,observation.Reason);
    if (_closing) return;
    var decision = _liveReload.Observe(observation);
    if (decision.Stop) { _liveWatchTimer.Stop(); return; }
    if (decision.Invalidate) await InvalidateLoadedSessionAsync(observation.Reason);
+   if (ConnectionPresentation.IsProblem(observation.State)) { ShowConnectionProblem(observation.State, observation.Reason); return; }
    if (decision.RestoreConnected)
    {
+    if(DateTime.UtcNow<_nextLiveReconnect)return;
     if (observation.Summary.ValueKind != JsonValueKind.Object) throw new InvalidDataException("다시 연결된 세이브의 요약을 읽을 수 없습니다.");
     _liveReconnectBusy = true; SetBusy(true, "현재 세이브 화면을 다시 불러오는 중…");
     try { await RestoreReloadedSummaryAsync(observation.Summary); }
@@ -59,9 +62,9 @@ public partial class MainWindow
    if (!_closing && _bridge?.HasExited == true)
    {
     try { await RecoverExitedEngineAsync(); }
-    catch (Exception recoveryError) { App.Log(recoveryError); Status("엔진 재연결을 다시 시도합니다 · " + recoveryError.Message); }
+    catch (Exception recoveryError) { App.Log(recoveryError); ShowConnectionProblem(_ready?"error":"engine_error", recoveryError.Message); }
    }
-   else if (!_closing) Status("자동 연결 확인을 다시 시도합니다 · " + error.Message);
+   else if (!_closing) ShowConnectionProblem("error", error.Message);
    _nextLiveReconnect = DateTime.UtcNow.AddSeconds(10);
   }
   finally { _livePollBusy = false; }
@@ -69,9 +72,15 @@ public partial class MainWindow
 
  private void ShowLiveWait(LiveConnectionObservation observation)
  {
-  ConnectionLabel.Text = observation.State == "waiting" ? "○  FM 실행 대기 · 자동 연결" : "○  세이브 로드 감지 · 다시 연결 대기";
+  LogConnectionState(observation.State,observation.Reason);
+  ConnectionLabel.Text = observation.State == "waiting" ? "○  FM 실행 대기 · 자동 연결" : observation.State == "ready" ? "○  세이브 확인 완료 · 연결 준비" : "○  세이브 로드 대기 · 자동 연결";
   ConnectionLabel.Foreground = ResourceBrush("GoldBrush");
   Status(string.IsNullOrWhiteSpace(observation.Reason) ? "새 게임 데이터가 준비되면 자동으로 다시 연결합니다." : observation.Reason);
+  if(!_dataLoaded&&_connectionProblemPanel!=null&&DetailHost.Children.Contains(_connectionProblemPanel)){
+   DetailHost.Children.Clear();_connectionProblemPanel=null;_connectionProblemKey=null;
+   DetailHost.Children.Add(Text("FM 연결을 기다리고 있습니다.",23,bold:true));
+   var hint=Text(string.IsNullOrWhiteSpace(observation.Reason)?"FM에서 세이브 로딩이 끝나면 자동으로 연결합니다.":observation.Reason,14);hint.Margin=new Thickness(0,16,0,0);DetailHost.Children.Add(hint);
+  }
  }
 
  private string? PreserveAbandonedDraft()
@@ -97,8 +106,9 @@ public partial class MainWindow
 
  private async Task InvalidateLoadedSessionAsync(string reason)
  {
+  _liveReload.InvalidateView();
   ++_liveViewEpoch;
-  _reloadContext ??= new(_detail?.Entity.Kind ?? _kind, _detail?.Entity.Id, _tab, SearchScreen.IsVisible, _searchView?.CaptureReloadState());
+  _reloadContext ??= new(_detail?.Entity.Kind ?? _kind, _detail?.Entity.Id, _tab, SearchScreen.IsVisible, _searchView?.CaptureReloadState(), LeagueScreen.IsVisible, _returnToLeague, _leagueBrowser?.CaptureState());
   _reloadDraftPath = PreserveAbandonedDraft();
   _scalarReviewWindow?.Close(); _scalarReviewWindow = null;
   _searchTimer.Stop(); _scoreTimer.Stop(); ++_searchVersion;
@@ -123,6 +133,7 @@ public partial class MainWindow
  private async Task ReconnectLoadedSessionAsync()
  {
   if (_bridge == null) return;
+  DiagnosticsLog.Current?.Write("connection","reconnect_attempt");
   _liveReconnectBusy = true; SetBusy(true, "새 세이브를 자동으로 불러오는 중…");
   try
   {
@@ -131,7 +142,8 @@ public partial class MainWindow
    _liveReload.Observe(observation);
    if (observation.State != "reconnected" || observation.Summary.ValueKind != JsonValueKind.Object)
    {
-    ShowLiveWait(observation); _nextLiveReconnect = DateTime.UtcNow.AddSeconds(10); return;
+    if(ConnectionPresentation.IsProblem(observation.State))ShowConnectionProblem(observation.State,observation.Reason);else ShowLiveWait(observation);
+    _nextLiveReconnect = DateTime.UtcNow.AddSeconds(10); return;
    }
    await RestoreReloadedSummaryAsync(observation.Summary);
   }
@@ -140,10 +152,30 @@ public partial class MainWindow
 
  private async Task RestoreReloadedSummaryAsync(JsonElement summary)
  {
-  var context = _reloadContext; _reloadContext = null;
+  try {await RestoreReloadedSummaryCoreAsync(summary);DiagnosticsLog.Current?.Write("connection","view_restored");}
+  catch {
+   // SetSummary restarts the watcher before rendering. If rendering fails,
+   // retain a pending view restore even though the backend is still connected.
+   _liveReload.InvalidateView();_dataLoaded=_live=false;SearchScreenButton.IsEnabled=false;
+   throw;
+  }
+ }
+
+ private async Task RestoreReloadedSummaryCoreAsync(JsonElement summary)
+ {
+  var context = _reloadContext;
   SetSummary(summary);
   _kind = context?.Kind ?? _kind; SetNavigation();
-  if (context?.SearchVisible == true)
+  if (context?.LeagueVisible == true || context?.LeagueOrigin == true)
+  {
+   await ShowLeagueBrowserAsync(context.League);
+   if (!context.LeagueVisible && context.EntityId is uint leagueEntityId)
+   {
+    try { await OpenEntity(context.Kind, leagueEntityId, false); _tab = context.Tab; await RenderDetail(); }
+    catch (BridgeException) { ClearDetail(); await ShowLeagueBrowserAsync(context.League); }
+   }
+  }
+  else if (context?.SearchVisible == true)
   {
    await ShowSearchAsync(context.Kind);
    if (context.Search != null && _searchView != null) await _searchView.RestoreReloadStateAsync(context.Search);
@@ -158,6 +190,7 @@ public partial class MainWindow
    }
    else await ShowSearchAsync(_kind);
   }
+  _reloadContext=null;
   Status("새 세이브를 자동으로 불러왔습니다 · 이전 초안과 미리보기는 재사용하지 않았습니다." + (_reloadDraftPath == null ? "" : " 폐기 초안: " + _reloadDraftPath));
  }
 
@@ -165,18 +198,16 @@ public partial class MainWindow
  {
   var previous = _bridge;
   if (previous == null || !previous.HasExited) return;
+  DiagnosticsLog.Current?.Write("connection","engine_recovery_attempt");
   // Never kill or replace a live worker whose accepted write may be unfinished.
   await InvalidateLoadedSessionAsync("Rust 엔진이 종료되어 자료를 다시 불러옵니다.");
   _liveReconnectBusy = true; SetBusy(true, "엔진 다시 연결 중…");
   try
   {
-   await previous.DisposeAsync();
-   _bridge = new BridgeClient(EnginePath());
-   _bridge.Diagnostic += message => Dispatcher.BeginInvoke(() => Status(message));
-   await _bridge.CallAsync("status");
+   await EnsureEngineReadyAsync();
    EnableLiveWatch();
    // A failed connect arms the new backend's load monitor for a later retry.
-   var summary = await _bridge.CallAsync("connect");
+   var summary = await _bridge!.CallAsync("connect");
    await RestoreReloadedSummaryAsync(summary);
   }
   finally { _liveReconnectBusy = false; SetBusy(false); }

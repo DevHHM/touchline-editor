@@ -231,6 +231,7 @@ impl Bridge {
                     .map(str::to_string)
                     .or_else(|| (!indexed_sort).then(|| sort.to_string()));
                 value_keys.extend(filter.fields.iter().map(|range| range.key.clone()));
+                value_keys.extend(filter.condition_field_keys().map(str::to_string));
                 value_keys.extend(sort_field.iter().cloned());
                 let mut unique = std::collections::HashSet::new();
                 value_keys.retain(|key| unique.insert(key.clone()));
@@ -356,6 +357,16 @@ impl Bridge {
                                 if errors.len() < 8 {
                                     errors.push(format!("{}: {err:#}", e.name));
                                 }
+                                // An already true indexed OR branch does not
+                                // depend on a failed profile read. Keep the row
+                                // with explicitly missing detail columns.
+                                if q.filter.proven_without_detail(e) {
+                                    let mut row = entity(e);
+                                    row["values"] = json!({});
+                                    row["missing_values"] = json!(q.value_keys);
+                                    rows.push(row);
+                                    q.matched += 1;
+                                }
                             }
                         }
                     }
@@ -402,6 +413,7 @@ impl Bridge {
                 let mut roles = std::collections::BTreeMap::<String, usize>::new();
                 let mut groups = std::collections::BTreeMap::<String, usize>::new();
                 let mut categories = std::collections::BTreeMap::<String, usize>::new();
+                let mut nations = std::collections::BTreeMap::<u32, (String, usize)>::new();
                 let mut total = 0;
                 let mut employed = 0;
                 for e in self.index()?.entities.iter().filter(|e| e.kind == k) {
@@ -428,7 +440,27 @@ impl Bridge {
                     if !group.is_empty() {
                         *groups.entry(group).or_default() += 1;
                     }
+                    if matches!(k, EntityKind::Player | EntityKind::Staff | EntityKind::Person) {
+                        if let Some(id) = e.nationality_id.filter(|id| *id > 0) {
+                            let name = clean(&e.nationality);
+                            let nation = nations.entry(id).or_default();
+                            // Count every matching ID, even if one legacy row lacks the name.
+                            // Do not invent a label when no indexed person supplies one.
+                            nation.1 += 1;
+                            if !name.is_empty() && (nation.0.is_empty() || name < nation.0) {
+                                nation.0 = name;
+                            }
+                        }
+                    }
                 }
+                let mut nations = nations.into_iter()
+                    .filter(|(_, (name, _))| !name.is_empty())
+                    .map(|(id, (name, count))| (id, name, count))
+                    .collect::<Vec<_>>();
+                nations.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
+                let nations = nations.into_iter()
+                    .map(|(id, name, count)| json!({"id":id,"name":name,"count":count}))
+                    .collect::<Vec<_>>();
                 let facet = |values: std::collections::BTreeMap<String, usize>| {
                     values
                         .into_iter()
@@ -436,8 +468,29 @@ impl Bridge {
                         .collect::<Vec<_>>()
                 };
                 Ok(
-                    json!({"roles":facet(roles),"groups":facet(groups),"football_categories":facet(categories),"total":total,"employed":employed,"unemployed":total-employed}),
+                    json!({"roles":facet(roles),"groups":facet(groups),"football_categories":facet(categories),"nations":nations,"total":total,"employed":employed,"unemployed":total-employed}),
                 )
+            }
+            "league_catalog" => {
+                let refresh = match a.get("refresh") {
+                    None | Some(Value::Null) => false,
+                    Some(Value::Bool(value)) => *value,
+                    _ => bail!("리그 새로고침 조건은 참/거짓이어야 합니다"),
+                };
+                if refresh && self.live {
+                    crate::leagues::refresh(self.index.as_mut().context("연결 없음")?)?;
+                }
+                let catalog = crate::leagues::catalog(self.index()?);
+                let leagues = catalog.groups.iter().map(|group| json!({
+                    "key":group.key,"id":group.id,"name":group.name,
+                    "nation_id":group.nation_id,"nation":group.nation,
+                    "football_category":group.football_category,
+                    "club_count":group.clubs.len(),
+                    "clubs":group.clubs.iter().map(entity).collect::<Vec<_>>()
+                })).collect::<Vec<_>>();
+                Ok(json!({"leagues":leagues,"total_clubs":catalog.total_clubs,
+                    "known_clubs":catalog.known_clubs,"unclassified_clubs":catalog.total_clubs-catalog.known_clubs,
+                    "live":self.live,"warnings":catalog.warnings}))
             }
             "compare" => {
                 let refs = references(a)?;
@@ -804,6 +857,7 @@ mod tests {
         Fixture {
             bridge: Bridge {
                 index: Some(Index {
+                    club_leagues: Vec::new(),
                     session,
                     entities,
                     warnings: vec![],
@@ -816,6 +870,27 @@ mod tests {
     }
     fn args(ids: &[u32]) -> Value {
         json!({"targets":ids.iter().map(|id|json!({"kind":"Player","id":id})).collect::<Vec<_>>(),"rules":[{"key":"ca","operation":"set","value":100}]})
+    }
+    #[test]
+    fn leagues_catalog_bridge_is_address_free_and_snapshot_refresh_never_reads_process() {
+        let mut f = fixture();
+        let index = f.bridge.index.as_mut().unwrap();
+        for id in [101, 102, 103] {
+            let mut club = index.entities[0].clone();
+            club.id = id; club.kind = EntityKind::Club; club.name = format!("Synthetic club {id}");
+            club.club_id = Some(id); club.football_category = FootballCategory::Men;
+            index.entities.push(club);
+        }
+        index.club_leagues = vec![ClubLeague {club_id:101,league_id:Some(5),league:"Test League".into(),nation_id:Some(10),nation:"Test Nation".into()},
+            ClubLeague {club_id:102,league_id:Some(5),league:"Test League".into(),nation_id:Some(10),nation:"Test Nation".into()}];
+        let result = f.bridge.dispatch("league_catalog", &json!({"refresh":true})).unwrap();
+        assert_eq!(result["live"], false); assert_eq!(result["total_clubs"], 3);
+        assert_eq!(result["known_clubs"], 2); assert_eq!(result["unclassified_clubs"], 1);
+        assert_eq!(result["leagues"].as_array().unwrap().len(), 2);
+        let clubs = result["leagues"].as_array().unwrap().iter().flat_map(|group| group["clubs"].as_array().unwrap()).collect::<Vec<_>>();
+        assert!(clubs.iter().all(|club| club["kind"] == "Club" && club.get("address").is_none() && club.get("base").is_none()));
+        assert_eq!(clubs.len(), 3);
+        assert!(f.bridge.dispatch("league_catalog", &json!({"refresh":"yes"})).is_err());
     }
     #[test]
     fn freeze_preview_retains_current_value_targets_and_hides_bindings() {
@@ -905,6 +980,117 @@ mod tests {
             .unwrap()
     }
     #[test]
+    fn detailed_conditions_keep_or_candidates_and_apply_and_precedence() {
+        let mut f = fixture();
+        let rules = json!([
+            {"source":"field","key":"ca","op":"gte","value":110},
+            {"join":"or","source":"entity","key":"name","op":"contains","value":"Fixture7"},
+            {"join":"and","source":"entity","key":"employed","op":"eq","value":false}
+        ]);
+        let id = start(&mut f, json!({"kind":"Player","filter":{"conditions":rules}}));
+        let result = step(&mut f,id);
+        assert_eq!(result["matched"], 2);
+        assert_eq!(result["failed"], 0);
+        // Basic filters restrict the entire OR expression, not just one group.
+        let id = start(&mut f, json!({"kind":"Player","filter":{"ca_min":105,"conditions":rules}}));
+        let result = step(&mut f,id);
+        assert_eq!(result["items"][0]["id"],8);
+        assert_eq!(result["matched"],1);
+        // false OR true AND false must remain false (AND before OR).
+        let id = start(&mut f, json!({"kind":"Player","filter":{"conditions":[
+            {"source":"entity","key":"ca","op":"gt","value":150},
+            {"join":"or","source":"field","key":"pa","op":"eq","value":150},
+            {"join":"and","source":"entity","key":"employed","op":"eq","value":true}
+        ]}}));
+        assert_eq!(step(&mut f,id)["matched"],0);
+        // Conditions-only indexed queries do not require profile snapshots.
+        let id = start(&mut f, json!({"kind":"Player","filter":{"conditions":[
+            {"source":"entity","key":"id","op":"between","value":8,"value2":9}
+        ]}}));
+        assert_eq!(step(&mut f,id)["items"][0]["id"],8);
+    }
+    #[test]
+    fn position_group_query_roundtrip_preserves_any_semantics_and_other_conditions() {
+        let mut f=fixture();
+        for (id,left,right) in [(7,20.,1.),(8,1.,20.)] {
+            let path=f.folder.join(format!("detail-Player-{id}.json"));
+            let mut detail:Detail=serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            for (key,value) in [("position_dl",left),("position_dr",right)] {
+                let mut field=detail.fields[0].clone();field.key=key.into();field.label=key.into();field.min=0.;field.max=20.;field.value=value;detail.fields.push(field);
+            }
+            std::fs::write(path,serde_json::to_vec(&detail).unwrap()).unwrap();
+        }
+        let filter=json!({"conditions":[{"source":"position","key":"any","op":"gte","value":20,"positions":["position_dl","position_dr"]}]});
+        let saved:workspace::Filter=serde_json::from_value(filter).unwrap();
+        let restored=serde_json::to_value(saved).unwrap();
+        let id=start(&mut f,json!({"kind":"Player","filter":restored}));let result=step(&mut f,id);
+        assert_eq!(result["matched"],2);assert_eq!(result["failed"],0);
+        let mut constrained=restored.clone();constrained["conditions"].as_array_mut().unwrap().push(json!({"source":"entity","key":"ca","op":"gte","value":105}));
+        let id=start(&mut f,json!({"kind":"Player","filter":constrained}));let result=step(&mut f,id);
+        assert_eq!(result["matched"],1);assert_eq!(result["items"][0]["id"],8);
+        let mut one=restored.clone();one["conditions"][0]["positions"]=json!(["position_dl"]);
+        let id=start(&mut f,json!({"kind":"Player","filter":one}));let result=step(&mut f,id);
+        assert_eq!(result["matched"],1);assert_eq!(result["items"][0]["id"],7);
+        assert!(f.bridge.dispatch("search",&json!({"kind":"Player","filter":restored})).is_err());
+    }
+    #[test]
+    fn detailed_missing_values_never_match_inequality_and_disabled_rows_are_ignored() {
+        let mut f = fixture();
+        let path = f.folder.join("detail-Player-8.json");
+        let mut d: Detail = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        d.fields.retain(|field| field.key != "ca");
+        std::fs::write(&path,serde_json::to_vec(&d).unwrap()).unwrap();
+        let id = start(&mut f,json!({"kind":"Player","filter":{"conditions":[
+            {"source":"field","key":"ca","op":"ne","value":100}
+        ]}}));
+        assert_eq!(step(&mut f,id)["matched"],0);
+        let id = start(&mut f,json!({"kind":"Player","filter":{"conditions":[
+            {"source":"field","key":"ca","op":"ne","value":100},
+            {"join":"or","source":"entity","key":"id","op":"eq","value":8}
+        ]}}));
+        assert_eq!(step(&mut f,id)["items"][0]["id"],8);
+        std::fs::remove_file(&path).unwrap();
+        let id = start(&mut f,json!({"kind":"Player","filter":{"conditions":[
+            {"source":"field","key":"ca","op":"ne","value":100},
+            {"join":"or","source":"entity","key":"id","op":"eq","value":8}
+        ]}}));
+        let result=step(&mut f,id);
+        assert_eq!(result["items"][0]["id"],8);
+        assert_eq!(result["failed"],1);
+        assert_eq!(result["items"][0]["missing_values"][0],"ca");
+        let id = start(&mut f,json!({"kind":"Player","filter":{"conditions":[
+            {"enabled":false,"source":"field","key":"unavailable_old_key","op":"eq","value":1},
+            {"join":"or","source":"entity","key":"name","op":"eq","value":"  FIXTURE7 "}
+        ]}}));
+        assert_eq!(step(&mut f,id)["items"][0]["id"],7);
+        // Missing primary nation is not treated as "not Italian".
+        let id = start(&mut f,json!({"kind":"Player","filter":{"conditions":[
+            {"source":"entity","key":"nationality_id","op":"ne","value":1}
+        ]}}));
+        assert_eq!(step(&mut f,id)["matched"],0);
+    }
+    #[test]
+    fn detailed_condition_errors_reject_before_creating_a_cursor() {
+        let mut f = fixture();
+        for rule in [
+            json!({"source":"entity","key":"address","op":"eq","value":1}),
+            json!({"source":"entity","key":"employed","op":"gte","value":true}),
+            json!({"source":"entity","key":"age","op":"contains","value":"10"}),
+            json!({"source":"entity","key":"name","op":"eq","value":1}),
+            json!({"source":"field","key":"ca","op":"between","value":180,"value2":100}),
+            json!({"source":"field","key":"ca","op":"eq","value":201}),
+            json!({"source":"field","key":"unsupported","op":"eq","value":1}),
+            json!({"source":"entity","key":"id","op":"eq","value":1.5}),
+            json!({"source":"entity","key":"football_category","op":"eq","value":"other"}),
+            json!({"join":"xor","source":"entity","key":"ca","op":"eq","value":100})
+        ] {
+            assert!(f.bridge.dispatch("query_start",&json!({"kind":"Player","filter":{"conditions":[rule]}})).is_err());
+            assert!(f.bridge.work.queries.is_empty());
+        }
+        let rule=json!({"source":"entity","key":"age","op":"gte","value":16});
+        assert!(f.bridge.dispatch("query_start",&json!({"kind":"Player","filter":{"conditions":vec![rule;65]}})).is_err());
+    }
+    #[test]
     fn primary_nationality_is_indexed_for_players_and_staff_with_stable_pagination() {
         let mut f = fixture();
         let template = f.bridge.index.as_ref().unwrap().entities[0].clone();
@@ -972,6 +1158,103 @@ mod tests {
                 }
                 assert!(pages >= 2);
                 assert_eq!(advanced, expected);
+            }
+        }
+    }
+    #[test]
+    fn nationality_filter_agrees_across_simple_and_cursor_searches_without_detail_reads() {
+        let mut f = fixture();
+        let template = f.bridge.index.as_ref().unwrap().entities[0].clone();
+        for kind in [EntityKind::Player, EntityKind::Staff, EntityKind::Person] {
+            let mut entities = vec![];
+            for n in (0..240).rev() {
+                let mut e = template.clone();
+                e.kind = kind;
+                e.id = 1000 + n;
+                e.nationality_id = Some(776);
+                e.nationality = "대한민국".into();
+                e.club_id = Some(1141);
+                entities.push(e);
+            }
+            // Country names and club identity are intentionally misleading.
+            for (id, nationality_id) in [(900, Some(777)), (901, None)] {
+                let mut e = template.clone();
+                e.kind = kind;
+                e.id = id;
+                e.nationality_id = nationality_id;
+                e.nationality = "대한민국".into();
+                e.club_id = Some(776);
+                entities.push(e);
+            }
+            f.bridge.index.as_mut().unwrap().entities = entities;
+            let expected = (1000..1240).collect::<Vec<_>>();
+            let filter = json!({"nationality_id":776,"ca_min":100,"ca_max":100,"employed":true});
+            let mut simple = vec![];
+            while simple.len() < expected.len() {
+                let page = f.bridge.dispatch("search", &json!({
+                    "kind":kind,"sort":"nationality","filter":filter,
+                    "offset":simple.len(),"limit":17,
+                })).unwrap();
+                assert_eq!(page["total"], expected.len());
+                simple.extend(page["items"].as_array().unwrap().iter().map(|e| e["id"].as_u64().unwrap() as u32));
+            }
+            assert_eq!(simple, expected);
+            let started = f.bridge.dispatch("query_start", &json!({"kind":kind,"sort":"nationality","filter":filter})).unwrap();
+            assert_eq!(started["field_keys"], json!([]));
+            let mut advanced = vec![];
+            let mut pages = 0;
+            loop {
+                let page = step(&mut f, started["query_id"].as_u64().unwrap());
+                assert_eq!(page["failed"], 0);
+                advanced.extend(page["items"].as_array().unwrap().iter().map(|e| e["id"].as_u64().unwrap() as u32));
+                pages += 1;
+                if page["complete"] == true { break; }
+            }
+            assert!(pages >= 2);
+            assert_eq!(advanced, expected);
+            for command in ["search", "query_start"] {
+                let unknown = f.bridge.dispatch(command, &json!({"kind":kind,"filter":{"nationality_id":999}})).unwrap();
+                assert_eq!(unknown["total"], 0);
+                assert!(f.bridge.dispatch(command, &json!({"kind":kind,"filter":{"nationality_id":0}})).is_err());
+            }
+        }
+    }
+    #[test]
+    fn nationality_facets_use_unique_primary_ids_and_exclude_nonperson_kinds() {
+        let mut f = fixture();
+        let template = f.bridge.index.as_ref().unwrap().entities[0].clone();
+        for kind in EntityKind::ALL {
+            let mut entities = vec![];
+            for (n, (id, label)) in [
+                (Some(776), "  대한민국  "), (Some(776), "대한민국"),
+                (Some(776), ""), (Some(777), "대한민국"),
+                (Some(100), "Italy"), (None, "Unknown"), (Some(0), "Invalid"),
+                (Some(888), "\t"),
+            ].into_iter().enumerate() {
+                let mut e = template.clone();
+                e.id = 1000 + n as u32;
+                e.kind = kind;
+                e.nationality_id = id;
+                e.nationality = label.into();
+                entities.push(e);
+            }
+            // Another entity type must never contribute to this kind's counts.
+            let mut other = template.clone();
+            other.kind = if kind == EntityKind::Player { EntityKind::Staff } else { EntityKind::Player };
+            other.nationality_id = Some(776);
+            other.nationality = "대한민국".into();
+            entities.push(other);
+            f.bridge.index.as_mut().unwrap().entities = entities;
+            let facets = f.bridge.dispatch("search_facets", &json!({"kind":kind})).unwrap();
+            assert_eq!(facets["total"], 8);
+            if matches!(kind, EntityKind::Player | EntityKind::Staff | EntityKind::Person) {
+                assert_eq!(facets["nations"], json!([
+                    {"id":100,"name":"Italy","count":1},
+                    {"id":776,"name":"대한민국","count":3},
+                    {"id":777,"name":"대한민국","count":1},
+                ]));
+            } else {
+                assert_eq!(facets["nations"], json!([]));
             }
         }
     }

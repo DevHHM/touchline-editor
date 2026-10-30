@@ -252,7 +252,7 @@ impl Bridge {
     fn search(&mut self, a: &Value) -> Result<Value> {
         let filter: crate::workspace::Filter = serde_json::from_value(a.get("filter").cloned().unwrap_or(json!({})))?;
         filter.validate()?;
-        ensure!(filter.fields.is_empty(),"능력치 조건 검색은 고급 검색에서 실행하세요");
+        ensure!(filter.fields.is_empty() && filter.condition_field_keys().next().is_none(),"능력치 조건 검색은 고급 검색에서 실행하세요");
         let k = match a.get("kind").filter(|v| !v.is_null()) {
             Some(v) => Some(serde_json::from_value::<EntityKind>(v.clone())?),
             None => None,
@@ -628,7 +628,10 @@ pub fn run() -> Result<()> {
         }
         let response = match serde_json::from_slice::<Value>(&bytes) {
             Ok(request) => session.handle(request),
-            Err(e) => json!({"id":Value::Null,"ok":false,"error":format!("Invalid request: {e}")}),
+            Err(e) => {
+                crate::runtime_log::event("error","command","invalid_json","Malformed bridge JSON rejected");
+                json!({"id":Value::Null,"ok":false,"error":format!("Invalid request: {e}")})
+            },
         };
         serde_json::to_writer(&mut output, &response)?;
         output.write_all(b"\n")?;
@@ -713,6 +716,7 @@ mod tests {
         };
         let mut b = Bridge {
             index: Some(Index {
+                club_leagues: Vec::new(),
                 session,
                 entities: vec![e],
                 warnings: vec![],

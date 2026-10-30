@@ -12,7 +12,7 @@ using System.Windows.Threading;
 namespace Touchline.Wpf;
 
 /// <summary>Local, transactional search-condition editing; this window has no bridge or game access.</summary>
-public sealed class SearchCriteriaWindow : Window
+public sealed partial class SearchCriteriaWindow : Window
 {
  private readonly string _kind;
  private readonly SearchCriteria _original;
@@ -26,7 +26,11 @@ public sealed class SearchCriteriaWindow : Window
  private readonly TabControl _tabs = new() { Name = "CriteriaTabs", Background = Brushes.Transparent, BorderThickness = new Thickness(0) };
  private readonly TextBox _name = Input(), _club = Input();
  private readonly ComboBox _scope = ChoiceBox(), _role = ChoiceBox(), _employment = ChoiceBox(), _group = ChoiceBox(), _footballCategory = ChoiceBox();
+ private readonly ComboBox _nationality = new() { Name = "CriteriaNationality", DisplayMemberPath = nameof(SearchNationChoice.Label), IsEditable = true, IsTextSearchEnabled = true, IsTextSearchCaseSensitive = false, MinHeight = 30, FontWeight = FontWeights.Medium, MaxDropDownHeight = 320 };
+ private readonly List<SearchNationChoice> _nations;
  private readonly Dictionary<string, TextBox> _bounds = [];
+ private readonly TextBlock _abilityVisibilityNotice = Label("능력 표시 설정이 변경되어 검색 조건을 가렸습니다. 이전 표시 설정으로 되돌리면 작성 중인 조건을 계속 편집할 수 있습니다.", 15, true);
+ private readonly bool _initialHideCa, _initialHidePa;
  private bool _sync;
  public SearchCriteria? Result { get; private set; }
 
@@ -50,11 +54,13 @@ public sealed class SearchCriteriaWindow : Window
   public Button Apply { get; } = Button("선택한 0개에 적용");
  }
 
- public SearchCriteriaWindow(string kind, List<EditableField> catalog, List<SearchChoice> roles, List<SearchChoice> groups, EntityRecord? ownClub, SearchCriteria initial)
+ public SearchCriteriaWindow(string kind, List<EditableField> catalog, List<SearchChoice> roles, List<SearchChoice> groups, EntityRecord? ownClub, SearchCriteria initial, List<SearchNationChoice>? nations = null)
  {
-  _kind = kind; _original = ModelCopy(initial);
+  if (SearchView.HasHiddenAbilityCriteria(initial, includeDisabled: true)) throw new InvalidOperationException("숨긴 CA / PA가 저장된 검색 조건입니다. 해당 능력을 표시한 뒤 조건을 편집하거나, 모두 지우기로 새 검색을 시작하세요.");
+  _initialHideCa = AbilityVisibility.Current.HideCa; _initialHidePa = AbilityVisibility.Current.HidePa;
+  _kind = kind; _original = ModelCopy(initial); _nations = SearchNationalityChoices.Build(nations ?? [], initial.NationalityId, initial.NationalityName);
   NameScope.SetNameScope(this, new NameScope());
-  _catalog = catalog.Where(field => !string.IsNullOrWhiteSpace(field.Key) && double.IsFinite(field.Min) && double.IsFinite(field.Max) && field.Min <= field.Max).DistinctBy(field => field.Key).ToList();
+  _catalog = catalog.Where(field => !string.IsNullOrWhiteSpace(field.Key) && !AbilityVisibility.Current.IsHidden(field.Key) && double.IsFinite(field.Min) && double.IsFinite(field.Max) && field.Min <= field.Max).DistinctBy(field => field.Key).ToList();
   _fields = _catalog.ToDictionary(field => field.Key);
   Title = kind == "Staff" ? "스태프 검색 조건" : "검색 조건";
   Width = 1000; Height = 740; MinWidth = 820; MinHeight = 620;
@@ -68,17 +74,57 @@ public sealed class SearchCriteriaWindow : Window
   var close = Button("×"); close.Width = 36; close.FontSize = 22; close.Padding = new Thickness(0); close.ToolTip = "취소하고 닫기"; close.Click += (_, _) => Close(); DockPanel.SetDock(close, Dock.Right); heading.Children.Add(close);
   heading.Children.Add(Label(Title, 20, true)); heading.MouseLeftButtonDown += (_, args) => { if (args.OriginalSource is TextBlock && args.LeftButton == MouseButtonState.Pressed) DragMove(); }; root.Children.Add(heading);
   Grid.SetRow(_tabs, 1); _tabs.Margin = new Thickness(18, 0, 18, 0); root.Children.Add(_tabs); RegisterName(_tabs.Name, _tabs);
+  Grid.SetRow(_abilityVisibilityNotice, 1); _abilityVisibilityNotice.Margin = new Thickness(30); _abilityVisibilityNotice.Visibility = Visibility.Collapsed; root.Children.Add(_abilityVisibilityNotice);
   _tabs.Items.Add(new TabItem { Header = "검색 조건", Content = BuildStandardPage(roles, groups, ownClub), Padding = new Thickness(20, 9, 20, 9), FontWeight = FontWeights.Bold });
   _tabs.Items.Add(new TabItem { Header = "능력치", Content = BuildAttributePage(false), Padding = new Thickness(20, 9, 20, 9), FontWeight = FontWeights.Bold });
   _tabs.Items.Add(new TabItem { Header = "직무 점수", Content = BuildAttributePage(true), Padding = new Thickness(20, 9, 20, 9), FontWeight = FontWeights.Bold });
+  _tabs.Items.Add(new TabItem { Header = "상세 조건", Content = BuildDetailedPage(roles, groups), Padding = new Thickness(20, 9, 20, 9), FontWeight = FontWeights.Bold });
+  _tabs.SelectedIndex = 3;
   _error.Foreground = new SolidColorBrush(Color.FromRgb(245, 160, 160)); _error.Margin = new Thickness(22, 8, 22, 0); _error.Visibility = Visibility.Collapsed; Grid.SetRow(_error, 2); root.Children.Add(_error);
   var footer = new DockPanel { Margin = new Thickness(20, 10, 20, 12) }; Grid.SetRow(footer, 3); root.Children.Add(footer);
   var buttons = new StackPanel { Orientation = Orientation.Horizontal }; DockPanel.SetDock(buttons, Dock.Right); footer.Children.Add(buttons);
   var cancel = Button("취소"); cancel.Name = "CriteriaCancelButton"; cancel.IsCancel = true; cancel.MinWidth = 92; cancel.Click += (_, _) => Close(); buttons.Children.Add(cancel); RegisterName(cancel.Name, cancel);
   var apply = Button("조건 적용"); apply.Name = "CriteriaApplyButton"; apply.MinWidth = 115; apply.Margin = new Thickness(8, 0, 0, 0); apply.Style = TryFindResource("PrimaryButton") as Style; apply.FontWeight = FontWeights.Bold; apply.Click += (_, _) => Commit(); buttons.Children.Add(apply); RegisterName(apply.Name, apply);
-  footer.Children.Add(Label("선택한 조건을 모두 만족하는 대상을 검색합니다.", 12));
+  footer.Children.Add(Label("기본 조건 + 상세 조건식을 적용합니다. 취소하면 변경되지 않습니다.", 12));
   PreviewKeyDown += (_, args) => { if (args.Key == Key.Escape) { args.Handled = true; Close(); } };
   LoadDraft(_original);
+  Loaded += (_, _) => { AbilityVisibility.Current.Changed -= AbilityVisibilityChanged; AbilityVisibility.Current.Changed += AbilityVisibilityChanged; RefreshAbilityVisibility(); };
+  Closed += (_, _) => AbilityVisibility.Current.Changed -= AbilityVisibilityChanged;
+ }
+
+ private void AbilityVisibilityChanged(object? sender, EventArgs args)
+ {
+  if (!Dispatcher.CheckAccess()) { Dispatcher.Invoke(RefreshAbilityVisibility); return; }
+  RefreshAbilityVisibility();
+ }
+ private void RefreshAbilityVisibility()
+ {
+  // Keep every draft control intact while blocking a dialog built under different visibility settings.
+  bool blocked = _initialHideCa != AbilityVisibility.Current.HideCa || _initialHidePa != AbilityVisibility.Current.HidePa;
+  _tabs.Visibility = blocked ? Visibility.Collapsed : Visibility.Visible;
+  _abilityVisibilityNotice.Visibility = blocked ? Visibility.Visible : Visibility.Collapsed;
+  if (FindName("CriteriaApplyButton") is Button apply) apply.IsEnabled = !blocked;
+  if (blocked) ClearError();
+ }
+ internal void QaAssertAbilityVisibility()
+ {
+  if (_catalog.Any(field => AbilityVisibility.Current.IsHidden(field.Key)) || _ruleCatalog.Any(field => AbilityVisibility.Current.IsHidden(field.Key))) throw new InvalidOperationException("숨긴 능력치가 검색 조건 목록에 표시됩니다.");
+  foreach (string key in new[] { "ca", "pa" })
+   if (AbilityVisibility.Current.IsHidden(key) && (_bounds[key + "Min"].Parent != null || _bounds[key + "Max"].Parent != null)) throw new InvalidOperationException("숨긴 능력치의 범위 입력란이 표시됩니다.");
+  _ = Snapshot();
+  if (!AbilityVisibility.Current.HideCa || !AbilityVisibility.Current.HidePa)
+  {
+   bool ca = AbilityVisibility.Current.HideCa, pa = AbilityVisibility.Current.HidePa;
+   string key = !ca ? "ca" : "pa"; _bounds[key + "Min"].Text = "123";
+   string draft = JsonSerializer.Serialize(Snapshot());
+   try
+   {
+    AbilityVisibility.Current.Set(key == "ca" || ca, key == "pa" || pa); RefreshAbilityVisibility();
+    if (_tabs.Visibility != Visibility.Collapsed || (FindName("CriteriaApplyButton") as Button)?.IsEnabled != false || JsonSerializer.Serialize(Snapshot()) != draft) throw new InvalidOperationException("표시 변경 시 작성 중인 검색 조건을 보호하지 못했습니다.");
+   }
+   finally { AbilityVisibility.Current.Set(ca, pa); RefreshAbilityVisibility(); }
+   if (_tabs.Visibility != Visibility.Visible || JsonSerializer.Serialize(Snapshot()) != draft) throw new InvalidOperationException("검색 조건 초안을 복원하지 못했습니다.");
+  }
  }
 
  public static SearchCriteria ModelCopy(SearchCriteria criteria) => criteria.Clone();
@@ -105,7 +151,7 @@ public sealed class SearchCriteriaWindow : Window
  {
   var page = new Grid { Margin = new Thickness(2, 14, 2, 0) }; page.RowDefinitions.Add(new() { Height = GridLength.Auto }); page.RowDefinitions.Add(new() { Height = GridLength.Auto }); page.RowDefinitions.Add(new());
   var basic = new Grid(); basic.ColumnDefinitions.Add(new()); basic.ColumnDefinitions.Add(new());
-  for (int i = 0; i < 5; i++) basic.RowDefinitions.Add(new() { Height = GridLength.Auto });
+  for (int i = 0; i < 6; i++) basic.RowDefinitions.Add(new() { Height = GridLength.Auto });
   var scope = new List<SearchChoice> { new("all", "전체 데이터베이스") }; if (ownClub != null) scope.Add(new("own", "우리 구단 · " + ownClub.DisplayName));
   _scope.ItemsSource = scope; _scope.SelectedValue = scope.Any(choice => choice.Key == _original.Scope) ? _original.Scope : "all";
   _role.Name = "CriteriaRole"; RegisterName(_role.Name, _role);
@@ -113,12 +159,15 @@ public sealed class SearchCriteriaWindow : Window
   Populate(_group, groups, _original.Group, "모든 선수단");
   _employment.ItemsSource = new[] { new SearchChoice("all", "전체"), new SearchChoice("unemployed", "무소속"), new SearchChoice("employed", "소속 있음") }; _employment.SelectedValue = "all";
   _footballCategory.Name = "CriteriaFootballCategory"; RegisterName(_footballCategory.Name, _footballCategory); _footballCategory.ItemsSource = FootballSearchCategories.Choices; _footballCategory.SelectedValue = ""; _footballCategory.ToolTip = FootballSearchCategories.Hint;
-  foreach (var (label, input, row, col) in new (string, FrameworkElement, int, int)[] { ("이름 · 영문 이름 · UID", _name, 0, 0), ("소속 구단 이름", _club, 0, 1), ("검색 범위", _scope, 1, 0), ("현재 직무 / 포지션", _role, 1, 1), ("고용 상태", _employment, 2, 0), ("선수단 구분", _group, 2, 1) })
+  foreach (var (label, input, row, col) in new (string, FrameworkElement, int, int)[] { ("이름 · 영문 이름 · UID", _name, 0, 0), ("소속 구단 이름", _club, 0, 1), ("검색 범위", _scope, 1, 0), (_kind=="Player"?"포지션 · 숙련도":"현재 직무", _kind=="Player"?BuildPositionShortcut():_role, 1, 1), ("고용 상태", _employment, 2, 0), ("선수단 구분", _group, 2, 1) })
   { var control = Labeled(label, input); Grid.SetRow(control, row); Grid.SetColumn(control, col); basic.Children.Add(control); if (input == _group && _kind != "Player") control.Visibility = Visibility.Collapsed; }
   var football = Labeled("축구 구분", _footballCategory); Grid.SetRow(football, 3); basic.Children.Add(football); football.Visibility = FootballSearchCategories.Supports(_kind) ? Visibility.Visible : Visibility.Collapsed;
-  var footballHint = Label("미확인 대상은 전체에 포함됩니다.\n스태프는 소속 구단 기준입니다.", 11); footballHint.Margin = new Thickness(0, 4, 14, 8); footballHint.ToolTip = FootballSearchCategories.Hint; Grid.SetRow(footballHint, 3); Grid.SetColumn(footballHint, 1); basic.Children.Add(footballHint); footballHint.Visibility = football.Visibility;
+  RegisterName(_nationality.Name, _nationality); TextSearch.SetTextPath(_nationality, nameof(SearchNationChoice.Name)); _nationality.ItemsSource = _nations; _nationality.ToolTip = SearchNationalityChoices.Hint;
+  System.Windows.Automation.AutomationProperties.SetName(_nationality, "주 국적");
+  var nationControl = Labeled("주 국적 · 국가명 입력 / 선택", _nationality); Grid.SetRow(nationControl, 3); Grid.SetColumn(nationControl, 1); basic.Children.Add(nationControl); nationControl.Visibility = SearchNationalityChoices.Supports(_kind) ? Visibility.Visible : Visibility.Collapsed;
+  var footballHint = Label("스태프의 축구 구분은 소속 구단 기준 · 주 국적은 본인 기준 (추가 국적 제외)", 11); footballHint.Margin = new Thickness(0, 0, 14, 8); footballHint.ToolTip = FootballSearchCategories.Hint + "\n" + SearchNationalityChoices.Hint; Grid.SetRow(footballHint, 4); Grid.SetColumnSpan(footballHint, 2); basic.Children.Add(footballHint); footballHint.Visibility = SearchNationalityChoices.Supports(_kind) ? Visibility.Visible : Visibility.Collapsed;
   var ranges = new UniformGrid { Columns = 3 };
-  ranges.Children.Add(Bounds("나이", "age")); ranges.Children.Add(Bounds("현재 능력 (CA)", "ca")); ranges.Children.Add(Bounds("잠재 능력 (PA)", "pa")); Grid.SetRow(ranges, 4); Grid.SetColumnSpan(ranges, 2); basic.Children.Add(ranges);
+  ranges.Children.Add(Bounds("나이", "age")); ranges.Children.Add(Bounds("현재 능력 (CA)", "ca")); ranges.Children.Add(Bounds("잠재 능력 (PA)", "pa")); Grid.SetRow(ranges, 5); Grid.SetColumnSpan(ranges, 2); basic.Children.Add(ranges);
   bool person = _kind is "Player" or "Staff" or "Person"; ranges.Visibility = person ? Visibility.Visible : Visibility.Collapsed; _scope.IsEnabled = person; _employment.IsEnabled = person;
   page.Children.Add(basic);
   var selected = new DockPanel { Margin = new Thickness(0, 5, 0, 8) }; var clear = Button("숫자 조건 지우기"); clear.Click += (_, _) => { foreach (string key in _conditions.Keys.ToArray()) RemoveCondition(key); }; DockPanel.SetDock(clear, Dock.Right); selected.Children.Add(clear); selected.Children.Add(_conditionCount); Grid.SetRow(selected, 1); page.Children.Add(selected);
@@ -126,7 +175,9 @@ public sealed class SearchCriteriaWindow : Window
  }
  private FrameworkElement Bounds(string title, string key)
  {
-  var grid = new Grid(); grid.ColumnDefinitions.Add(new()); grid.ColumnDefinitions.Add(new() { Width = new GridLength(18) }); grid.ColumnDefinitions.Add(new()); var min = Input(); var max = Input(); min.ToolTip = "최소 · 비우면 제한 없음"; max.ToolTip = "최대 · 비우면 제한 없음"; _bounds[key + "Min"] = min; _bounds[key + "Max"] = max; grid.Children.Add(min); var dash = Label("–"); dash.HorizontalAlignment = HorizontalAlignment.Center; Grid.SetColumn(dash, 1); grid.Children.Add(dash); Grid.SetColumn(max, 2); grid.Children.Add(max); return Labeled(title + " · 최소 / 최대", grid);
+  var grid = new Grid(); grid.ColumnDefinitions.Add(new()); grid.ColumnDefinitions.Add(new() { Width = new GridLength(18) }); grid.ColumnDefinitions.Add(new()); var min = Input(); var max = Input(); min.ToolTip = "최소 · 비우면 제한 없음"; max.ToolTip = "최대 · 비우면 제한 없음"; _bounds[key + "Min"] = min; _bounds[key + "Max"] = max;
+  if (AbilityVisibility.Current.IsHidden(key)) return Labeled(title, Label("숨김"));
+  grid.Children.Add(min); var dash = Label("–"); dash.HorizontalAlignment = HorizontalAlignment.Center; Grid.SetColumn(dash, 1); grid.Children.Add(dash); Grid.SetColumn(max, 2); grid.Children.Add(max); return Labeled(title + " · 최소 / 최대", grid);
  }
  private FrameworkElement BuildAttributePage(bool scores)
  {
@@ -243,27 +294,53 @@ public sealed class SearchCriteriaWindow : Window
  {
   _name.Text = draft.Name; _club.Text = draft.Club; _scope.SelectedValue = draft.Scope; if (_scope.SelectedIndex < 0) _scope.SelectedValue = "all"; _role.SelectedValue = draft.Role; _employment.SelectedValue = draft.Employment; if (_employment.SelectedIndex < 0) _employment.SelectedValue = "all"; _group.SelectedValue = draft.Group;
   _footballCategory.SelectedValue = draft.FootballCategory ?? "";
+  _nationality.SelectedItem = _nations.FirstOrDefault(choice => choice.Id == draft.NationalityId) ?? _nations[0]; _nationality.Text = (_nationality.SelectedItem as SearchNationChoice)?.Name ?? SearchNationalityChoices.AllLabel;
   foreach (var (key, value) in new[] { ("ageMin", draft.AgeMin), ("ageMax", draft.AgeMax), ("caMin", draft.CaMin), ("caMax", draft.CaMax), ("paMin", draft.PaMin), ("paMax", draft.PaMax) }) _bounds[key].Text = value;
   foreach (string key in _conditions.Keys.ToArray()) RemoveCondition(key); foreach (var condition in draft.Conditions) AddCondition(condition.Key, condition.Min, condition.Max); RefreshConditions(); ClearError();
+  LoadDetailedRules(draft.Rules);
  }
  public SearchCriteria Snapshot()
  {
   if (_conditions.Count > 64) throw new InvalidOperationException("숫자 조건은 최대 64개입니다. 선택한 조건을 줄여주세요.");
   string category = Selected(_footballCategory);
+  var nationality = SearchNationalityChoices.Supports(_kind) ? SearchNationalityChoices.Resolve(_nations, _nationality.SelectedItem as SearchNationChoice, _nationality.Text) : new SearchNationChoice(null, SearchNationalityChoices.AllLabel);
   var result = new SearchCriteria { Name = _name.Text.Trim(), Club = _club.Text.Trim(), Scope = Selected(_scope, "all"), FootballCategory = FootballSearchCategories.Supports(_kind) && category.Length > 0 ? category : null, Role = Selected(_role), Employment = Selected(_employment, "all"), Group = _kind == "Player" ? Selected(_group) : "", AgeMin = _bounds["ageMin"].Text.Trim(), AgeMax = _bounds["ageMax"].Text.Trim(), CaMin = _bounds["caMin"].Text.Trim(), CaMax = _bounds["caMax"].Text.Trim(), PaMin = _bounds["paMin"].Text.Trim(), PaMax = _bounds["paMax"].Text.Trim() };
   if (!FootballSearchCategories.IsValid(result.FootballCategory)) throw new InvalidOperationException("축구 구분을 확인하세요.");
+  result.NationalityId = nationality.Id; result.NationalityName = nationality.Id.HasValue ? nationality.Name : ""; SearchNationalityChoices.Validate(_kind, result.NationalityId, result.NationalityName);
   if (result.Name.Length > 200 || result.Club.Length > 200) throw new InvalidOperationException("이름과 구단 검색어는 각각 200자 이내로 입력하세요.");
   foreach (var (key, label, limit) in new[] { ("age", "나이", 129d), ("ca", "현재 능력", 200d), ("pa", "잠재 능력", 200d) })
   { string lowText = _bounds[key + "Min"].Text.Trim(), highText = _bounds[key + "Max"].Text.Trim(); double? low = lowText.Length == 0 ? null : Parse(lowText, label + " 최소", 0, limit, true); double? high = highText.Length == 0 ? null : Parse(highText, label + " 최대", 0, limit, true); if (low > high) throw new InvalidOperationException(label + ": 최소값이 최대값보다 큽니다."); }
-  result.Conditions = _conditions.Values.Select(editor => ReadCondition(editor.Key, Selected(editor.Operator), editor.First.Text, editor.Second.Text)).ToList(); return result;
+  result.Conditions = _conditions.Values.Select(editor => ReadCondition(editor.Key, Selected(editor.Operator), editor.First.Text, editor.Second.Text)).ToList();
+  result.Rules = ReadDetailedRules(); SearchConditionCatalog.Compile(result.Rules, _ruleCatalog); return result;
  }
  private void Commit()
  {
+  if (_initialHideCa != AbilityVisibility.Current.HideCa || _initialHidePa != AbilityVisibility.Current.HidePa) return;
   try { var result = Snapshot(); Result = result; DialogResult = true; }
   catch (InvalidOperationException error) { Result = null; ShowError(error.Message); }
  }
  private void ShowError(string text) { _error.Text = text; _error.Visibility = Visibility.Visible; }
  private void ClearError() { _error.Text = ""; _error.Visibility = Visibility.Collapsed; }
+
+ internal async Task<object> QaNationalityLayoutAsync(string directory)
+ {
+  if (!IsVisible || !SearchNationalityChoices.Supports(_kind)) throw new InvalidOperationException("주 국적 검색 창을 표시한 뒤 검사하세요.");
+  Directory.CreateDirectory(directory); double width = Width, height = Height; int tab = _tabs.SelectedIndex; var reports = new List<object>();
+  try
+  {
+   _tabs.SelectedIndex = 0;
+   foreach (var size in new[] { (Width: width, Height: height), (Width: 820d, Height: 620d) })
+   {
+    Width = size.Width; Height = size.Height; await SettleAsync();
+    Rect bounds = _nationality.TransformToAncestor(this).TransformBounds(new Rect(_nationality.RenderSize));
+    if (!_nationality.IsVisible || bounds.Left < 0 || bounds.Right > ActualWidth || bounds.Top < 0 || bounds.Bottom > ActualHeight - 60) throw new InvalidOperationException("주 국적 선택기가 최소 창 크기에서 잘립니다.");
+    string path = Path.Combine(directory, $"nationality-criteria-{size.Width:0}x{size.Height:0}.png"); Capture(path);
+    reports.Add(new { width = ActualWidth, height = ActualHeight, path, nationality = Snapshot().NationalityId, visible = true });
+   }
+   return reports;
+  }
+  finally { Width = width; Height = height; _tabs.SelectedIndex = tab; }
+ }
 
  /// <summary>Checks the actual position picker locally without changing the committed draft.</summary>
  public object QaRoleChoices()

@@ -25,6 +25,7 @@ public sealed partial class SearchView : UserControl
  private readonly ObservableCollection<SearchRow> _rows = [];
  private readonly List<EditableField> _catalog = [], _columnCatalog = [];
  private readonly List<SearchChoice> _roles = [], _groups = [];
+ private readonly List<SearchNationChoice> _nations = [];
  private readonly List<string> _errors = [];
  private readonly HashSet<string> _loadedFields = [];
  private readonly ListCollectionView _resultView;
@@ -118,7 +119,8 @@ public sealed partial class SearchView : UserControl
   _name.KeyDown += async (_, args) => { if (args.Key == Key.Enter && !_searching) { args.Handled = true; await SafeAsync(ApplyQuickAsync); } };
   _sort.SelectionChanged += async (_, _) => { if (_suppress) return; string next = Selected(_sort, "ca"); if (next == "role" && _sortKey != next) { _descending = false; UpdateDirection(); } _sortKey = next; await SafeAsync(RefreshColumnsAsync); };
   _view.SelectionChanged += async (_, _) => { if (!_suppress) await SafeAsync(async () => { SaveColumnPreferences(); await RefreshColumnsAsync(); }); };
-  Unloaded += (_, _) => { try { SaveColumnPreferences(); } catch (Exception ex) { App.Log(ex); } };
+  Loaded += (_, _) => { AbilityVisibility.Current.Changed -= AbilityVisibilityChanged; AbilityVisibility.Current.Changed += AbilityVisibilityChanged; ApplyAbilityVisibility(); };
+  Unloaded += (_, _) => { AbilityVisibility.Current.Changed -= AbilityVisibilityChanged; try { SaveColumnPreferences(); } catch (Exception ex) { App.Log(ex); } };
   Content = root; UpdateButtons();
  }
 
@@ -178,7 +180,7 @@ public sealed partial class SearchView : UserControl
  {
   await SetKindAsync(state.Kind);
   _sortKey = state.SortKey; _descending = state.Descending;
-  if (!_columnCatalog.Any(field => field.Key == _sortKey) && !IsMetadata(_sortKey)) _sortKey = "name";
+  if (!_columnCatalog.Any(field => field.Key == _sortKey) && !IsMetadata(_sortKey) || AbilityVisibility.Current.IsHidden(_sortKey)) { _sortKey = "name"; _descending = false; }
   _suppress = true; _sort.SelectedValue = _sortKey; _suppress = false;
   UpdateDirection(); await ApplyCriteriaAsync(state.Criteria);
  }
@@ -188,13 +190,14 @@ public sealed partial class SearchView : UserControl
   await StopAsync();
   SaveColumnPreferences(); _buildingColumns = true; _grid.Columns.Clear(); _buildingColumns = false;
   int epoch = ++_epoch; var finished = _loadFinished = new(TaskCreationOptions.RunContinuationsAsynchronously);
-  _loading = true; _initialized = false; _resultsInvalidated = false; _kind = kind; _catalog.Clear(); _columnCatalog.Clear(); _sample = null; _rows.Clear(); _criteria = new(); SyncQuick(); UpdateButtons();
+  _loading = true; _initialized = false; _resultsInvalidated = false; _kind = kind; _catalog.Clear(); _columnCatalog.Clear(); _nations.Clear(); _sample = null; _rows.Clear(); _criteria = new(); SyncQuick(); UpdateButtons();
   _title.Text = $"{KindLabel} 검색"; _subtitle.Text = _live ? "현재 게임 데이터 · 새 검색에서 조건을 설정하세요." : "저장된 스냅샷 · 새 검색에서 조건을 설정하세요.";
   _status.Text = "직무와 검색 가능한 능력치를 불러오는 중…"; _count.Text = "검색 준비";
   try
   {
    var facets = await _bridge.CallAsync("search_facets", new { kind }); if (epoch != _epoch) return;
    FillFacet(_roles, facets, "roles", "모든 직무 / 포지션"); FillFacet(_groups, facets, "groups", "모든 선수단");
+   _nations.AddRange(SearchNationalityChoices.FromFacets(facets));
    _count.Text = $"검색 가능 {facets.GetProperty("total").GetInt32():N0}명";
    try
    {
@@ -216,13 +219,16 @@ public sealed partial class SearchView : UserControl
   choices.Clear(); choices.Add(new("", all));
   if (facets.TryGetProperty(name, out var items)) foreach (var item in items.EnumerateArray()) { string value = item.GetProperty("value").GetString() ?? ""; if (value.Length != 0) choices.Add(new(value, $"{value} ({item.GetProperty("count").GetInt32():N0})")); }
  }
- private void BuildSortOptions()
+ private void BuildSortOptions(bool preserveSelection = false)
  {
   _suppress = true;
   var choices = new List<SearchChoice> { new("ca", "현재 능력 (CA)"), new("pa", "잠재 능력 (PA)"), new("name", "이름"), new("age", "나이"), new("nationality", "국적"), new("club", "소속 구단"), new("group", "선수단 / 소속"), new("id", "고유 번호"), new("english_name", "원어 이름"), new("football_category", "축구 구분"), new("role", _kind == "Player" ? "포지션 (GK → ST)" : "현재 직무") };
   choices.AddRange(_columnCatalog.Where(item => item.Key.StartsWith("score_")).Select(item => new SearchChoice(item.Key, "직무 점수 · " + item.Label)));
   choices.AddRange(_columnCatalog.Where(item => !item.Key.StartsWith("score_") && !choices.Any(choice => choice.Key == item.Key)).OrderBy(item => item.Section).ThenBy(item => item.Label).Select(item => new SearchChoice(item.Key, item.Label)));
-  _sort.ItemsSource = choices; _sortKey = _kind is "Player" or "Staff" ? "ca" : "name"; _sort.SelectedValue = _sortKey; _descending = _sortKey == "ca"; UpdateDirection(); _suppress = false;
+  choices.RemoveAll(choice => AbilityVisibility.Current.IsHidden(choice.Key));
+  if (!preserveSelection) { _sortKey = _kind is "Player" or "Staff" && !AbilityVisibility.Current.HideCa ? "ca" : "name"; _descending = _sortKey == "ca"; }
+  if (!choices.Any(choice => choice.Key == _sortKey)) { _sortKey = "name"; _descending = false; }
+  _sort.ItemsSource = choices; _sort.SelectedValue = _sortKey; UpdateDirection(); _suppress = false;
  }
  private async Task RefreshColumnsAsync()
  {
@@ -233,7 +239,7 @@ public sealed partial class SearchView : UserControl
  }
  private SearchCriteriaWindow CriteriaWindow(SearchCriteria initial)
  {
-  var dialog = new SearchCriteriaWindow(_kind, _catalog, _roles, _groups, _ownClub, initial.Clone());
+  var dialog = new SearchCriteriaWindow(_kind, ConditionFields(), _roles, _groups, _ownClub, initial.Clone(), _nations);
   var owner = Window.GetWindow(this); if (owner != null) dialog.Owner = owner; return dialog;
  }
  private async Task EditCriteriaAsync(bool blank)
@@ -274,11 +280,14 @@ public sealed partial class SearchView : UserControl
  {
   var values = new List<string>();
   if (_criteria.FootballCategory != null) values.Add("축구 구분: " + FootballSearchCategories.Label(_criteria.FootballCategory));
+  if (_criteria.NationalityId.HasValue) values.Add("주 국적: " + SearchNationalityChoices.DisplayName(_criteria.NationalityId.Value, _nations.FirstOrDefault(nation => nation.Id == _criteria.NationalityId)?.Name ?? _criteria.NationalityName));
   if (_criteria.Name.Length > 0) values.Add("이름 / UID: " + _criteria.Name); if (_criteria.Club.Length > 0) values.Add("구단: " + _criteria.Club);
   if (_criteria.Role.Length > 0) values.Add("직무: " + _criteria.Role); if (_criteria.Group.Length > 0 && _kind == "Player") values.Add("선수단: " + _criteria.Group);
   if (_criteria.Employment != "all") values.Add(_criteria.Employment == "unemployed" ? "무소속" : "소속 있음");
-  foreach (var pair in new[] { ("나이", _criteria.AgeMin, _criteria.AgeMax), ("CA", _criteria.CaMin, _criteria.CaMax), ("PA", _criteria.PaMin, _criteria.PaMax) }) if (pair.Item2.Length > 0 || pair.Item3.Length > 0) values.Add($"{pair.Item1} {pair.Item2}–{pair.Item3}");
-  foreach (var condition in _criteria.Conditions) { var item = _catalog.FirstOrDefault(item => item.Key == condition.Key); if (item != null) values.Add($"{item.Label} {RangeText(condition.Min, condition.Max)}"); }
+  foreach (var pair in new[] { ("나이", _criteria.AgeMin, _criteria.AgeMax), ("CA", _criteria.CaMin, _criteria.CaMax), ("PA", _criteria.PaMin, _criteria.PaMax) }) if (pair.Item2.Length > 0 || pair.Item3.Length > 0) values.Add(AbilityVisibility.Current.IsHidden(pair.Item1.ToLowerInvariant()) ? $"{pair.Item1} 숨김" : $"{pair.Item1} {pair.Item2}–{pair.Item3}");
+  foreach (var condition in _criteria.Conditions) { var item = ConditionFields().FirstOrDefault(item => item.Key == condition.Key); if (item != null) values.Add(AbilityVisibility.Current.IsHidden(condition.Key) ? $"{item.Label} 숨김" : $"{item.Label} {RangeText(condition.Min, condition.Max)}"); }
+  var conditionCatalog = DetailedCatalog();
+  foreach (var rule in _criteria.Rules) values.Add((rule.Enabled && rule.Join == "or" ? "또는 · " : "") + (AbilityVisibility.Current.IsHidden(rule.Key) ? (conditionCatalog.FirstOrDefault(item => item.Source == rule.Source && item.Key == rule.Key)?.Label ?? rule.Key) + " 숨김" : SearchConditionCatalog.Describe(rule, conditionCatalog)));
   return values;
  }
  private void RefreshSummary()
@@ -304,23 +313,28 @@ public sealed partial class SearchView : UserControl
  }
  private void ValidateCriteria(SearchCriteria value)
  {
-  if (value == null || value.Conditions == null || value.Name == null || value.Club == null || value.Role == null || value.Group == null) throw new InvalidOperationException("저장된 검색 조건이 올바르지 않습니다.");
+  if (value == null || value.Conditions == null || value.Rules == null || value.Name == null || value.Club == null || value.Role == null || value.Group == null) throw new InvalidOperationException("저장된 검색 조건이 올바르지 않습니다.");
+  if (HasHiddenAbilityCriteria(value)) throw new InvalidOperationException(HiddenAbilityCriteriaMessage);
   if (value.Name.Length > 200 || value.Club.Length > 200) throw new InvalidOperationException("이름과 구단 검색어는 각각 200자 이내로 입력하세요.");
   if (value.Scope is not ("all" or "own") || value.Scope == "own" && _ownClub == null) throw new InvalidOperationException("이 검색 범위를 현재 자료에서 사용할 수 없습니다.");
   if (value.Employment is not ("all" or "unemployed" or "employed")) throw new InvalidOperationException("고용 상태가 올바르지 않습니다.");
   if (!FootballSearchCategories.IsValid(value.FootballCategory) || value.FootballCategory != null && !FootballSearchCategories.Supports(_kind)) throw new InvalidOperationException("현재 검색에서 사용할 수 없는 축구 구분입니다.");
+  SearchNationalityChoices.Validate(_kind, value.NationalityId, value.NationalityName);
   if (value.Role.Length > 0 && !_roles.Any(item => item.Key == value.Role)) throw new InvalidOperationException("현재 자료에 없는 직무 / 포지션입니다.");
   if (value.Group.Length > 0 && (_kind != "Player" || !_groups.Any(item => item.Key == value.Group))) throw new InvalidOperationException("현재 자료에 없는 선수단입니다.");
   foreach (var pair in new[] { ("나이", value.AgeMin, value.AgeMax, 129), ("CA", value.CaMin, value.CaMax, 200), ("PA", value.PaMin, value.PaMax, 200) }) { var low = Number(pair.Item2, pair.Item1 + " 최소", 0, pair.Item4, true); var high = Number(pair.Item3, pair.Item1 + " 최대", 0, pair.Item4, true); if (low > high) throw new InvalidOperationException(pair.Item1 + ": 최소가 최대보다 큽니다."); }
   ReadConditions(value);
+  SearchConditionCatalog.Compile(value.Rules, DetailedCatalog());
  }
+ private List<EditableField> ConditionFields() => SearchConditionCatalog.MergeFields(_catalog,_columnCatalog);
+ private List<SearchConditionDefinition> DetailedCatalog() => SearchConditionCatalog.Build(_kind, ConditionFields(), _roles, _groups, _nations);
  private List<RangeFilter> ReadConditions(SearchCriteria criteria)
  {
   if (criteria.Conditions.Count > 64) throw new InvalidOperationException("능력치 조건은 최대 64개입니다.");
   var result = new List<RangeFilter>();
   foreach (var condition in criteria.Conditions)
   {
-   var item = _catalog.SingleOrDefault(item => item.Key == condition.Key) ?? throw new InvalidOperationException("현재 자료에서 사용할 수 없는 능력치 조건입니다.");
+   var item = ConditionFields().SingleOrDefault(item => item.Key == condition.Key) ?? throw new InvalidOperationException("현재 자료에서 사용할 수 없는 능력치 조건입니다.");
    double? low = condition.Min, high = condition.Max;
    if (low == null && high == null || low > high || low.HasValue && (!double.IsFinite(low.Value) || low < item.Min || low > item.Max) || high.HasValue && (!double.IsFinite(high.Value) || high < item.Min || high > item.Max)) throw new InvalidOperationException(item.Label + ": 능력치 범위를 확인하세요.");
    if (result.Any(existing => existing.key == item.Key)) throw new InvalidOperationException(item.Label + " 조건이 중복되었습니다.");
@@ -356,17 +370,21 @@ public sealed partial class SearchView : UserControl
  private bool NumericSort => !IsMetadata(_sortKey) && _columnCatalog.Any(item => item.Key == _sortKey);
  private void Column(string title, string binding, string sort, double width, bool numeric = false)
  {
-  var style = new Style(typeof(TextBlock), TryFindResource(typeof(TextBlock)) as Style); style.Setters.Add(new Setter(TextBlock.TextTrimmingProperty, TextTrimming.CharacterEllipsis)); if (numeric) style.Setters.Add(new Setter(TextBlock.TextAlignmentProperty, TextAlignment.Right)); style.Setters.Add(new Setter(ToolTipService.ToolTipProperty, new Binding(binding)));
-  _grid.Columns.Add(new DataGridTextColumn { Header = title, Binding = new Binding(binding) { TargetNullValue = "—", FallbackValue = "—", StringFormat = numeric ? "0.##" : null }, ElementStyle = style, SortMemberPath = sort, Width = width, MinWidth = numeric ? 48 : 90 });
+  bool hidden = AbilityVisibility.Current.IsHidden(sort);
+  var display = new Binding(binding) { TargetNullValue = hidden ? "숨김" : "—", FallbackValue = hidden ? "숨김" : "—", Converter = new SearchValueConverter(), ConverterParameter = sort };
+  var style = new Style(typeof(TextBlock), TryFindResource(typeof(TextBlock)) as Style); style.Setters.Add(new Setter(TextBlock.TextTrimmingProperty, TextTrimming.CharacterEllipsis)); if (numeric) style.Setters.Add(new Setter(TextBlock.TextAlignmentProperty, TextAlignment.Right)); style.Setters.Add(new Setter(ToolTipService.ToolTipProperty, display));
+  _grid.Columns.Add(new DataGridTextColumn { Header = title, Binding = display, ClipboardContentBinding = display, ElementStyle = style, SortMemberPath = sort, CanUserSort = !hidden, Width = width, MinWidth = numeric ? 48 : 90 });
  }
  private void ApplySort()
  {
+  EnsureVisibleSort();
   _resultView.CustomSort = new RowComparer(_sortKey, _descending);
   foreach (var column in _grid.Columns) column.SortDirection = column.SortMemberPath == _sortKey ? _descending ? ListSortDirection.Descending : ListSortDirection.Ascending : null;
  }
  private void GridSorting(object sender, DataGridSortingEventArgs args)
  {
   args.Handled = true; string key = args.Column.SortMemberPath;
+  if (AbilityVisibility.Current.IsHidden(key)) return;
   _descending = _sortKey == key ? !_descending : key is not ("name" or "english_name" or "nationality" or "club" or "role" or "age" or "group" or "id" or "football_category"); _sortKey = key; _suppress = true; _sort.SelectedValue = key; _suppress = false; UpdateDirection(); ApplySort();
  }
  private async Task SafeAsync(Func<Task> action)
@@ -377,9 +395,11 @@ public sealed partial class SearchView : UserControl
  private async Task SearchAsync()
  {
   if (_searching || _loading || !_initialized) return;
+  EnsureVisibleSort();
   ValidateCriteria(_criteria); var fields = ReadConditions(_criteria);
   uint? Whole(string text, string label, uint max) => Number(text, label, 0, max, true) is double value ? (uint)value : null;
-  var filter = new { football_category = _criteria.FootballCategory, age_min = Whole(_criteria.AgeMin, "최소 나이", 129), age_max = Whole(_criteria.AgeMax, "최대 나이", 129), ca_min = Whole(_criteria.CaMin, "최소 CA", 200), ca_max = Whole(_criteria.CaMax, "최대 CA", 200), pa_min = Whole(_criteria.PaMin, "최소 PA", 200), pa_max = Whole(_criteria.PaMax, "최대 PA", 200), club_query = _criteria.Club.Trim(), role = _criteria.Role, group = _kind == "Player" && _criteria.Group.Length > 0 ? _criteria.Group : null, unemployed = _criteria.Employment == "unemployed", employed = _criteria.Employment == "employed", fields };
+  var conditions = SearchConditionCatalog.Compile(_criteria.Rules, DetailedCatalog());
+  var filter = new { football_category = _criteria.FootballCategory, nationality_id = _criteria.NationalityId, age_min = Whole(_criteria.AgeMin, "최소 나이", 129), age_max = Whole(_criteria.AgeMax, "최대 나이", 129), ca_min = Whole(_criteria.CaMin, "최소 CA", 200), ca_max = Whole(_criteria.CaMax, "최대 CA", 200), pa_min = Whole(_criteria.PaMin, "최소 PA", 200), pa_max = Whole(_criteria.PaMax, "최대 PA", 200), club_query = _criteria.Club.Trim(), role = _criteria.Role, group = _kind == "Player" && _criteria.Group.Length > 0 ? _criteria.Group : null, unemployed = _criteria.Employment == "unemployed", employed = _criteria.Employment == "employed", fields, conditions };
   var selectedFields = ViewFields().Where(key => !NumericSort || key != _sortKey).ToArray();
   var args = new { kind = _kind, query = _criteria.Name.Trim(), club_id = _criteria.Scope == "own" ? _ownClub?.Id : null, filter, sort = _sortKey is "name" or "age" or "ca" or "pa" or "club" or "role" or "nationality" ? _sortKey : "name", sort_field = NumericSort ? _sortKey : null, fields = selectedFields };
   int epoch = _epoch; _resultsInvalidated = false; _cancellation?.Dispose(); _cancellation = new(); var cancellation = _cancellation.Token; var finished = _searchFinished = new(TaskCreationOptions.RunContinuationsAsynchronously);

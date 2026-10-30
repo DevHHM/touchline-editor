@@ -1,5 +1,6 @@
 using System.Collections;
 using System.ComponentModel;
+using System.Globalization;
 using System.IO;
 using System.Text.Json;
 using System.Windows;
@@ -57,7 +58,7 @@ public sealed class ClubRosterView : UserControl
  public ClubRosterView(BridgeClient bridge, EntityRecord club, bool live, Func<EntityRecord, Task>? open = null, string? selectedGroup = null, ClubGrowthAvailability? growthAvailability = null)
   : this(async (offset, cancellation) =>
   {
-   var response = await bridge.CallAsync("search", new { kind = "Player", club_id = club.Id, limit = 500, offset, sort = "ca", descending = true }, cancellation);
+   var response = await bridge.CallAsync("search", new { kind = "Player", club_id = club.Id, limit = 500, offset, sort = AbilityVisibility.Current.HideCa ? "name" : "ca", descending = !AbilityVisibility.Current.HideCa }, cancellation);
    return new RosterPage(response.GetProperty("items").Deserialize<List<EntityRecord>>(JsonDefaults.Options) ?? throw new InvalidDataException("선수 명단을 읽지 못했습니다."), response.GetProperty("total").GetInt32());
   }, club, live, open, selectedGroup, (growthAvailability ?? ClubGrowthAvailability.Unavailable).GateFetcher(async cancellation =>
   {
@@ -85,14 +86,15 @@ public sealed class ClubRosterView : UserControl
   EntityRoleSorting.Attach(_grid);
   NameCopy.AttachGrid(_grid, item => item as EntityRecord, message => _status.Text = message);
   _grid.Sorting += GrowthSorting;
+  AbilitySafeGridSort.Attach(_grid);
   _grid.SelectionChanged += (_, _) => { UpdateGrowthDetails(); UpdateControls(); };
   _grid.MouseDoubleClick += async (_, args) => { if (IsDataRow(args.OriginalSource)) await OpenAsync(_grid.SelectedItem as EntityRecord); };
   _grid.PreviewKeyDown += async (_, args) => { if (args.Key == Key.Enter && _grid.SelectedItem is EntityRecord person) { args.Handled = true; await OpenAsync(person); } };
   _openProfile.Click += async (_, _) => await OpenAsync(_grid.SelectedItem as EntityRecord);
   _refreshGrowth.Click += async (_, _) => await RefreshGrowthAsync();
   _localize.Click += (_, _) => OpenNameLocalization();
-  Loaded += (_, _) => { AttachViewport(); Dispatcher.BeginInvoke(UpdateViewportHeight, DispatcherPriority.Loaded); };
-  Unloaded += (_, _) => DetachViewport();
+  Loaded += (_, _) => { if (_active) { AbilityVisibility.Current.Changed -= AbilityVisibilityChanged; AbilityVisibility.Current.Changed += AbilityVisibilityChanged; AbilityVisibilityChanged(null, EventArgs.Empty); } AttachViewport(); Dispatcher.BeginInvoke(UpdateViewportHeight, DispatcherPriority.Loaded); };
+  Unloaded += (_, _) => { AbilityVisibility.Current.Changed -= AbilityVisibilityChanged; DetachViewport(); };
   UpdateControls();
  }
 
@@ -112,9 +114,11 @@ public sealed class ClubRosterView : UserControl
  private void AddColumn(string label, string property, double minWidth, double star = 0)
  {
   var style = new Style(typeof(TextBlock), Application.Current.TryFindResource(typeof(TextBlock)) as Style);
-  style.Setters.Add(new Setter(TextBlock.TextTrimmingProperty, TextTrimming.CharacterEllipsis)); style.Setters.Add(new Setter(ToolTipService.ToolTipProperty, new Binding(property)));
+  string? key = property == nameof(EntityRecord.RosterCa) ? "ca" : property == nameof(EntityRecord.RosterPa) ? "pa" : null;
+  Binding Display() => new(property) { TargetNullValue = "—", Converter = key == null ? null : new RosterAbilityConverter(key) };
+  style.Setters.Add(new Setter(TextBlock.TextTrimmingProperty, TextTrimming.CharacterEllipsis)); style.Setters.Add(new Setter(ToolTipService.ToolTipProperty, Display()));
   if (star == 0) style.Setters.Add(new Setter(TextBlock.TextAlignmentProperty, TextAlignment.Right));
-  _grid.Columns.Add(new DataGridTextColumn { Header = label, Binding = new Binding(property) { TargetNullValue = "—" }, SortMemberPath = property, ElementStyle = style, MinWidth = minWidth, Width = star > 0 ? new DataGridLength(star, DataGridLengthUnitType.Star) : new DataGridLength(minWidth) });
+  _grid.Columns.Add(new DataGridTextColumn { Header = label, Binding = Display(), SortMemberPath = property, ElementStyle = style, MinWidth = minWidth, Width = star > 0 ? new DataGridLength(star, DataGridLengthUnitType.Star) : new DataGridLength(minWidth) });
  }
 
  private void AddGrowthColumn(string label, string display, string sort, double width)
@@ -122,9 +126,25 @@ public sealed class ClubRosterView : UserControl
   var style = new Style(typeof(TextBlock), Application.Current.TryFindResource(typeof(TextBlock)) as Style);
   style.Setters.Add(new Setter(TextBlock.TextAlignmentProperty, TextAlignment.Right));
   style.Setters.Add(new Setter(TextBlock.TextTrimmingProperty, TextTrimming.CharacterEllipsis));
-  style.Setters.Add(new Setter(ToolTipService.ToolTipProperty, new Binding(nameof(EntityRecord.GrowthDetails))));
-  _grid.Columns.Add(new DataGridTextColumn { Header = label, Binding = new Binding(display), SortMemberPath = sort, ElementStyle = style, Width = width, MinWidth = width });
+  style.Setters.Add(new Setter(ToolTipService.ToolTipProperty, new Binding(nameof(EntityRecord.GrowthDetails)) { Converter = new RosterAbilityConverter("growth") }));
+  _grid.Columns.Add(new DataGridTextColumn { Header = label, Binding = new Binding(display) { Converter = new RosterAbilityConverter("growth") }, SortMemberPath = sort, ElementStyle = style, Width = width, MinWidth = width });
  }
+
+ private sealed class RosterAbilityConverter(string key) : IValueConverter
+ {
+  public object Convert(object value, Type targetType, object parameter, CultureInfo culture) => key == "growth" ? AbilityVisibility.Current.AnyHidden ? "숨김" : value : AbilityVisibility.Current.Format(key, value);
+  public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture) => Binding.DoNothing;
+ }
+ private void AbilityVisibilityChanged(object? sender, EventArgs args)
+ {
+  if (!Dispatcher.CheckAccess()) { Dispatcher.Invoke(() => AbilityVisibilityChanged(sender, args)); return; }
+  _grid.Items.Refresh();
+  foreach (var column in _grid.Columns)
+   column.CanUserSort = column.SortMemberPath switch { nameof(EntityRecord.RosterCa) => !AbilityVisibility.Current.HideCa, nameof(EntityRecord.RosterPa) => !AbilityVisibility.Current.HidePa, nameof(EntityRecord.GrowthGap) or nameof(EntityRecord.GrowthReference) => !AbilityVisibility.Current.AnyHidden, _ => true };
+  AbilitySafeGridSort.Refresh(_grid, nameof(EntityRecord.DisplayName), HiddenSort);
+  UpdateGrowthDetails(); UpdateControls();
+ }
+ private static bool HiddenSort(string property) => property switch { nameof(EntityRecord.RosterCa) => AbilityVisibility.Current.HideCa, nameof(EntityRecord.RosterPa) => AbilityVisibility.Current.HidePa, nameof(EntityRecord.GrowthGap) or nameof(EntityRecord.GrowthReference) => AbilityVisibility.Current.AnyHidden, _ => false };
 
  private sealed class GrowthComparer(string property, bool descending) : IComparer
  {
@@ -188,6 +208,7 @@ public sealed class ClubRosterView : UserControl
    _rows = new ListCollectionView(_roster); _rows.SortDescriptions.Add(new SortDescription(nameof(EntityRecord.RosterCa), ListSortDirection.Descending)); _rows.SortDescriptions.Add(new SortDescription(nameof(EntityRecord.DisplayName), ListSortDirection.Ascending));
    _rows.Filter = item => item is EntityRecord person && (SelectedGroup == SquadGroups.All || SquadGroups.Key(person.Group) == SelectedGroup); _grid.ItemsSource = _rows;
    _grid.Columns.First(column => column.SortMemberPath == nameof(EntityRecord.RosterCa)).SortDirection = ListSortDirection.Descending;
+   AbilityVisibilityChanged(null, EventArgs.Empty);
    _loaded = true; BuildGroups(); SelectGroup(SquadGroups.DefaultKey(_groups, _preferredGroup));
    _coverage.Text = $"{(_live ? "현재 연결 자료" : "저장된 스냅샷")} · 전체 {total:N0}명 조회 완료 · 실제 소속 팀 기준";
    if (_groups.Any(group => group.Key == SquadGroups.Unknown)) _coverage.Text += " · 미확인 소속은 별도 표시";
@@ -252,7 +273,7 @@ public sealed class ClubRosterView : UserControl
 
  private void UpdateGrowthDetails()
  {
-  _growthDetails.Text = _grid.SelectedItem is EntityRecord person ? person.DisplayName + " · " + person.GrowthDetails : _fetchGrowth == null ? _growthUnavailableReason : "선수를 선택하면 실제 적용 팀·명성·분모·계산 근거와 미확인 원인을 확인할 수 있습니다.";
+  _growthDetails.Text = AbilityVisibility.Current.AnyHidden ? "CA 또는 PA 숨김 중 · 성장 참고치와 계산 근거를 숨깁니다." : _grid.SelectedItem is EntityRecord person ? person.DisplayName + " · " + person.GrowthDetails : _fetchGrowth == null ? _growthUnavailableReason : "선수를 선택하면 실제 적용 팀·명성·분모·계산 근거와 미확인 원인을 확인할 수 있습니다.";
   _ = Dispatcher.BeginInvoke(UpdateViewportHeight, DispatcherPriority.Loaded);
  }
 
@@ -285,7 +306,8 @@ public sealed class ClubRosterView : UserControl
  {
   _filters.IsEnabled = _active && !_busy && _loaded; _grid.IsEnabled = _active && !_busy && _loaded;
   _openProfile.IsEnabled = _active && !_busy && _open != null && _grid.SelectedItem is EntityRecord;
-  _refreshGrowth.IsEnabled = _active && !_busy && !_growthBusy && _loaded && _fetchGrowth != null;
+  _growthStatus.Visibility = AbilityVisibility.Current.AnyHidden ? Visibility.Collapsed : Visibility.Visible;
+  _refreshGrowth.IsEnabled = _active && !_busy && !_growthBusy && _loaded && _fetchGrowth != null && !AbilityVisibility.Current.AnyHidden;
   _refreshGrowth.ToolTip = _fetchGrowth == null ? _growthUnavailableReason : "현재 선수단의 성장 참고치를 다시 조회합니다.";
   _localize.IsEnabled = _active && !_busy && !_growthBusy && _loaded && _localizationBridge != null && _grid.Items.Count > 0;
   _localize.ToolTip = $"현재 선수단 범위 {SelectedGroup} · {_grid.Items.Count}명의 이름 한글화 (최대 200명)";
@@ -331,13 +353,49 @@ public sealed class ClubRosterView : UserControl
 
  public void Invalidate()
  {
-  if (!_active) return; _active = false; ++_generation; _lifetime.Cancel();
+  if (!_active) return; AbilityVisibility.Current.Changed -= AbilityVisibilityChanged; _active = false; ++_generation; _lifetime.Cancel();
   _localizationWindow?.InvalidateConnection();
   foreach (var person in _roster) person.SetGrowth(null, "연결 또는 화면이 변경되었습니다. 다시 불러오세요.");
   _growthStatus.Text = "성장 정보가 무효화되었습니다. 다시 연결하여 불러오세요."; _growthStatus.ToolTip = null;
   UpdateGrowthDetails(); DetachViewport(); UpdateControls();
  }
  public async Task StopAsync() { Invalidate(); if (_inflight != null) await _inflight.Task; if (_growthTask != null) await _growthTask; _lifetime.Dispose(); }
+
+ public async Task<object> QaAbilityVisibilityAsync(string directory)
+ {
+  if (_live || !IsLoaded) throw new InvalidOperationException("능력치 표시 QA는 표시된 스냅샷 선수단에서 실행합니다.");
+  if (!_loaded) await LoadAsync();
+  var person = _roster.FirstOrDefault(person => person.Ca.HasValue && person.Pa.HasValue) ?? throw new InvalidOperationException("CA·PA QA 선수가 없습니다.");
+  bool originalCa = AbilityVisibility.Current.HideCa, originalPa = AbilityVisibility.Current.HidePa;
+  var raw = (person.Ca, person.Pa, person.RosterCa, person.RosterPa, person.GrowthReference, person.GrowthGap);
+  var reports = new List<object>(); Directory.CreateDirectory(directory); SelectGroup(SquadGroups.All); _grid.SelectedItem = person;
+  try
+  {
+   foreach (var (hideCa, hidePa) in new[] { (true, false), (false, true), (true, true), (false, false) })
+   {
+    AbilityVisibility.Current.Set(hideCa, hidePa);
+    foreach (var (key, property, value) in new[] { ("ca", nameof(EntityRecord.RosterCa), person.RosterCa), ("pa", nameof(EntityRecord.RosterPa), person.RosterPa) })
+    {
+     var column = _grid.Columns.OfType<DataGridTextColumn>().Single(column => (column.Binding as Binding)?.Path.Path == property);
+     string actual = await WorkbenchWindow.ReadAbilityQaCellAsync(_grid, person, column);
+     if (actual != AbilityVisibility.Current.Format(key, value) || (column.GetCellContent(person) as TextBlock)?.ToolTip?.ToString() != actual) throw new InvalidOperationException("선수단 수치/툴팁 숨김 불일치: " + key);
+     if (AbilityVisibility.Current.IsHidden(key) && (column.CanUserSort || column.SortDirection.HasValue)) throw new InvalidOperationException("선수단 숨긴 수치 정렬이 남았습니다.");
+    }
+    foreach (string property in new[] { nameof(EntityRecord.GrowthReferenceText), nameof(EntityRecord.GrowthGapText) })
+    {
+     var column = _grid.Columns.OfType<DataGridTextColumn>().Single(column => (column.Binding as Binding)?.Path.Path == property);
+     string actual = await WorkbenchWindow.ReadAbilityQaCellAsync(_grid, person, column);
+     string expected = AbilityVisibility.Current.AnyHidden ? "숨김" : property == nameof(EntityRecord.GrowthReferenceText) ? person.GrowthReferenceText : person.GrowthGapText;
+     if (actual != expected || AbilityVisibility.Current.AnyHidden && (column.GetCellContent(person) as TextBlock)?.ToolTip?.ToString() != "숨김") throw new InvalidOperationException("성장 참고치/툴팁 숨김 불일치.");
+    }
+    if (raw != (person.Ca, person.Pa, person.RosterCa, person.RosterPa, person.GrowthReference, person.GrowthGap)) throw new InvalidOperationException("숨김 변경이 선수단 원본을 변경했습니다.");
+    await CaptureAsync(Path.Combine(directory, $"roster-ability-{hideCa}-{hidePa}.png"));
+    reports.Add(new { hideCa, hidePa, renderedCellsAndTooltipsMasked = true, growthMasked = AbilityVisibility.Current.AnyHidden, rawUnchanged = true });
+   }
+   return new { success = true, gameWrites = false, reports };
+  }
+  finally { AbilityVisibility.Current.Set(originalCa, originalPa); }
+ }
 
  public async Task<object> QaPositionOrderAsync(string directory, uint[] ascending, uint[] descending)
  {

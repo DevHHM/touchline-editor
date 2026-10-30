@@ -3358,6 +3358,7 @@ mod route_tests {
     fn editor() -> Editor {
         let mut e = Editor::new(None);
         e.index = Some(Arc::new(Index {
+            club_leagues: Vec::new(),
             session: Session {
                 pid: 0,
                 created: 0,

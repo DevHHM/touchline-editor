@@ -1,5 +1,5 @@
 //! Bounded club/city access for the build accepted by backend::connect.
-//! Field access is guarded by the build adapter and validated against native layouts.
+//! Field access is guarded by the build adapter and validated native layouts.
 //! No process-wide scan, allocation, native call or write occurs in this module.
 use anyhow::{Context, Result, bail, ensure};
 use std::collections::HashMap;

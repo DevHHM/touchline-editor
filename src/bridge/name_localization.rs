@@ -151,7 +151,7 @@ mod tests {
     use crate::name_localization::tests::Fixture;
     fn bridge(f: &Fixture) -> Bridge {
         let entity = Entity { nationality:String::new(),nationality_id:None,id:f.parts.id,kind:EntityKind::Player,name:f.parts.name.clone(),english_name:f.parts.english_name.clone(),club:"Test club".into(),club_id:Some(1141),age:Some(20),ca:Some(100),pa:Some(150),role:"ST".into(),group:"1군".into(),football_category:FootballCategory::Men,address:0x10000,base:0xf000,index:Some(0) };
-        Bridge { index:Some(Index{session:f.session.clone(),entities:vec![entity],warnings:Vec::new()}),live:true,..Default::default() }
+        Bridge { index:Some(Index{session:f.session.clone(),entities:vec![entity],club_leagues:Vec::new(),warnings:Vec::new()}),live:true,..Default::default() }
     }
     fn preview(b: &mut Bridge,f: &Fixture,name: &str) -> Value {
         b.name_preview_with(&json!({"entries":[{"id":7,"korean_name":name}]}),&f.installation,|_,_|Ok(f.parts.clone())).unwrap()

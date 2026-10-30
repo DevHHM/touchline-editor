@@ -6,6 +6,7 @@ mod compatibility;
 mod batch;
 mod bridge;
 mod diagnostics;
+mod runtime_log;
 mod event_ui;
 mod events;
 mod extended;
@@ -14,6 +15,7 @@ mod traits;
 mod workspace;
 mod fields;
 mod growth;
+mod leagues;
 mod memory;
 mod native_alloc;
 mod name_localization;
@@ -27,14 +29,18 @@ mod typography;
 mod ui;
 
 fn main() {
+    runtime_log::init();
     if let Err(e) = start() {
         eprintln!("{e:#}");
+        runtime_log::error("lifecycle","startup_or_run_failed","Engine failed",&e);
         let _ = std::fs::write(
             transaction::data_dir().join("last-error.txt"),
-            format!("{e:#}"),
+            runtime_log::sanitize(&format!("{e:#}")),
         );
+        runtime_log::finish(false);
         std::process::exit(1);
     }
+    runtime_log::finish(true);
 }
 fn start() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();

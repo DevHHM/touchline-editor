@@ -1,4 +1,4 @@
-using System.ComponentModel;
+﻿using System.ComponentModel;
 using System.Globalization;
 using System.IO;
 using System.Text.Json;
@@ -16,7 +16,8 @@ namespace Touchline.Wpf;
 
 public partial class MainWindow : Window
 {
- private BridgeClient? _bridge;
+ private readonly BridgeSession _bridgeSession = new();
+ private BridgeClient? _bridge => _bridgeSession.Client;
  private EntityRecord? _ownClub;
  private DetailRecord? _detail;
  private bool _ready, _live, _busy, _closing, _precision, _syncSelection;
@@ -37,9 +38,11 @@ public partial class MainWindow : Window
  public MainWindow()
  {
   InitializeComponent();
+  InitializeAbilityVisibility();
   BuildVersionLabel.Text="NATIVE  ·  WPF + RUST  ·  "+typeof(App).Assembly.GetName().Version?.ToString(3);
   InitializeResponsiveLayout();
   InitializeUsability();
+  InitializeUpdates();
   InitializeLiveWatch();
   NameCopy.AttachGrid(EntityGrid, item => item as EntityRecord, Status);
   _searchTimer.Tick += async (_,_) => { _searchTimer.Stop(); await SearchAsync(); };
@@ -75,20 +78,18 @@ public partial class MainWindow : Window
   _qaRunning=_qaOutput!=null;
   if(App.Arg("--kind") is string startingKind && startingKind is "Player" or "Staff" or "Club" or "Person" or "City")_kind=startingKind;
   try {
-   _bridge=new BridgeClient(EnginePath());
-   _bridge.Diagnostic += msg => Dispatcher.BeginInvoke(()=>Status(msg));
-   SetSummary(await _bridge.CallAsync("status")); _ready=true; SetNavigation();
+   SetSummary(await EnsureEngineReadyAsync()); SetNavigation();
    if(App.Arg("--width") is string width && double.TryParse(width,out double w))Width=w;
    if(App.Arg("--height") is string height && double.TryParse(height,out double h))Height=h;
-   if(App.Arg("--snapshot") is string path) await Guard(async()=> { SetSummary(await _bridge.CallAsync("load_snapshot",new{path=System.IO.Path.GetFullPath(path)})); await SearchAsync(); await OpenInitialEntityAsync(); },true,"저장된 선수단 불러오는 중…");
-   if(App.Arg("--connect")=="readonly") {EnableLiveWatch();await Guard(async()=> {SetSummary(await _bridge.CallAsync("connect"));await SearchAsync();await OpenInitialEntityAsync();},true,"FM 데이터베이스 연결 중…");}
-   if(_qaRunning) { await RunUiCheck(); await CloseSafely(); }
+   if(App.Arg("--snapshot") is string path) await Guard(async()=> { SetSummary(await _bridge!.CallAsync("load_snapshot",new{path=System.IO.Path.GetFullPath(path)})); await SearchAsync(); await OpenInitialEntityAsync(); },true,"저장된 선수단 불러오는 중…");
+   if(App.Arg("--connect")=="readonly") {EnableLiveWatch();SetBusy(true,"FM 데이터베이스 연결 중…");try {SetSummary(await _bridge!.CallAsync("connect"));await SearchAsync();await OpenInitialEntityAsync();}catch(Exception ex){App.Log(ex);if(_qaRunning)throw;await ShowConnectFailureAsync(ex);}finally{SetBusy(false);}}
+   if(_qaRunning) { await RunUiCheck(); await CloseSafely(); Application.Current.Shutdown(); }
    else if(_dataLoaded) {
     if(App.Arg("--entity") is string startId&&uint.TryParse(startId,out uint parsedId)) {
      await Guard(async()=> { await OpenEntity(_kind,parsedId); if(App.Arg("--tab") is string startTab){_tab=startTab;await RenderDetail();} },true);
     } else await ShowSearchAsync(_kind);
    }
-  } catch(Exception ex) { App.Log(ex); Status(ex.Message); if(_qaOutput!=null) { Directory.CreateDirectory(System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(_qaOutput))!); File.WriteAllText(_qaOutput+".error.txt",ex.ToString()); Environment.ExitCode=1; await CloseSafely(); } }
+  } catch(Exception ex) { App.Log(ex); Status(ex.Message); if(_qaOutput!=null) { Directory.CreateDirectory(System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(_qaOutput))!); File.WriteAllText(_qaOutput+".error.txt",ex.ToString()); Environment.ExitCode=1; await CloseSafely(); Application.Current.Shutdown(1); } else ShowConnectionProblem(_ready?"error":"engine_error", ex.Message); }
  }
  private void SetSummary(JsonElement data)
  {
@@ -113,12 +114,24 @@ public partial class MainWindow : Window
   if(_detail?.Fields.Any(f=>f.IsDirty)!=true&&_relationsView?.HasPendingChanges!=true)return true;
   return AppDialog.Show(this,"아직 적용하지 않은 변경 내용이 있습니다. 버리고 이동할까요?","변경 내용",MessageBoxButton.YesNo,MessageBoxImage.Question)==MessageBoxResult.Yes;
  }
- private void ClearDetail() { _relationsView?.Invalidate(); _staffReviewView?.Invalidate(); _rosterView?.Invalidate(); _renderVersion++; _scoreVersion++; _scoresHost=null; if(_detail!=null)foreach(var f in _detail.Fields)f.PropertyChanged-=FieldChanged; _detail=null; DirtyBar.Visibility=Visibility.Collapsed; ReviewButton.IsEnabled=false; }
+ private void ClearDetail() { _abilityDisplayRefresh.Clear(); _relationsView?.Invalidate(); _staffReviewView?.Invalidate(); _rosterView?.Invalidate(); _renderVersion++; _scoreVersion++; _scoresHost=null; if(_detail!=null)foreach(var f in _detail.Fields)f.PropertyChanged-=FieldChanged; _detail=null; DirtyBar.Visibility=Visibility.Collapsed; ReviewButton.IsEnabled=false; }
  private async void Connect_Click(object sender,RoutedEventArgs e)
  {
-  if(_busy||_livePollBusy||_bridge==null||!CanLeave())return;
-  EnableLiveWatch();_reloadContext=null;
-  await Guard(async()=> { await CloseWorkbenches(); await DisposeSearchView(); CloseTools(); await StopDetailViewsAsync(); ClearDetail(); SetSummary(await _bridge.CallAsync("connect")); _routes.Clear();_routeIndex=-1;_offset=0; await ShowSearchAsync(_kind); },true,"FM 데이터베이스 연결 중 · 최초 연결에는 시간이 걸릴 수 있습니다");
+  if(_busy||_livePollBusy||!CanLeave())return;
+  SetBusy(true,"FM 데이터베이스 연결 중 · 최초 연결에는 시간이 걸릴 수 있습니다");
+  try {
+   // Cancelling a workbench close must keep the current connection and view.
+   try {await CloseWorkbenches();}catch(OperationCanceledException){Status("연결 변경을 취소했습니다.");return;}
+   DiagnosticsLog.Current?.Write("connection","connect_attempt");
+   EnableLiveWatch();_reloadContext=null;
+   await EnsureEngineReadyAsync();
+   await DisposeSearchView(); CloseTools(); await StopDetailViewsAsync(); ClearDetail();
+   SetSummary(await _bridge!.CallAsync("connect")); _routes.Clear();_routeIndex=-1;_offset=0; await ShowSearchAsync(_kind);
+   DiagnosticsLog.Current?.Write("connection","connect_succeeded");
+  } catch(Exception ex) {
+   App.Log(ex); if(_qaRunning)throw;
+   await ShowConnectFailureAsync(ex);
+  } finally {SetBusy(false);}
  }
  private async void LoadSnapshot_Click(object sender,RoutedEventArgs e)
  {
@@ -131,7 +144,7 @@ public partial class MainWindow : Window
  }
  private void SetNavigation()
  {
-  foreach(var b in NavigationButtons.Children.OfType<Button>()) { bool selected=(string)b.Tag==_kind; b.Background=selected?Brush("#233B38"):Brush("Transparent");b.Foreground=selected?ResourceBrush("AccentBrush"):ResourceBrush("MutedBrush"); }
+  foreach(var b in NavigationButtons.Children.OfType<Button>()) { bool selected=(string)b.Tag==(LeagueScreen.IsVisible?"League":_kind); b.Background=selected?Brush("#233B38"):Brush("Transparent");b.Foreground=selected?ResourceBrush("AccentBrush"):ResourceBrush("MutedBrush"); }
   ListTitle.Text=Label(_kind);Breadcrumb.Text="데이터베이스  /  "+Label(_kind);
   OwnOnly.IsEnabled=_kind is "Player" or "Staff" or "Person";
   SortBox.IsEnabled=_kind is "Player" or "Staff";
@@ -149,6 +162,7 @@ public partial class MainWindow : Window
   int generation=++_searchVersion;
   string listKind=_kind;
   var args=new Dictionary<string,object?> { ["kind"]=_kind,["query"]=SearchBox.Text.Trim(),["offset"]=_offset,["limit"]=50,["sort"]=(SortBox.SelectedItem as ComboBoxItem)?.Tag?.ToString()??"name" };
+  if(AbilityVisibility.Current.IsHidden(args["sort"]?.ToString()))args["sort"]="name";
   args["descending"]=args["sort"]?.ToString() is "ca" or "pa";
   if(_kind is not ("Player" or "Staff")) {args["sort"]="name";args["descending"]=false;}
   if(OwnOnly.IsChecked==true&&OwnOnly.IsEnabled&&_ownClub!=null)args["club_id"]=_ownClub.Id;
@@ -158,7 +172,8 @@ public partial class MainWindow : Window
    string? category=(FootballBox.SelectedItem as ComboBoxItem)?.Tag?.ToString();
    args["filter"]=new {football_category=string.IsNullOrEmpty(category)?null:category};
   }
-  try { var data=await _bridge.CallAsync("search",args);if(generation!=_searchVersion)return;var records=Decode<List<EntityRecord>>(data.GetProperty("items"))??[];_total=data.GetProperty("total").GetInt32();_listKind=listKind;EntityGrid.ItemsSource=records;ResultCount.Text=$"{_total:N0}{(_kind is "Club" or "City"?"개":"명")}";PageLabel.Text=$"{_offset/50+1} / {Math.Max(1,(_total+49)/50)}";PrevPage.IsEnabled=_offset>0;NextPage.IsEnabled=_offset+50<_total; } catch(Exception ex) { Status(ex.Message);if(_qaRunning)throw; }
+  string? requestedSort=_listRequestedSort=args["sort"]?.ToString();
+  try { var data=await _bridge.CallAsync("search",args);if(generation!=_searchVersion||AbilityVisibility.Current.IsHidden(requestedSort))return;var records=Decode<List<EntityRecord>>(data.GetProperty("items"))??[];_total=data.GetProperty("total").GetInt32();_listKind=listKind;_listSort=requestedSort;EntityGrid.ItemsSource=records;ResultCount.Text=$"{_total:N0}{(_kind is "Club" or "City"?"개":"명")}";PageLabel.Text=$"{_offset/50+1} / {Math.Max(1,(_total+49)/50)}";PrevPage.IsEnabled=_offset>0;NextPage.IsEnabled=_offset+50<_total; } catch(Exception ex) { Status(ex.Message);if(_qaRunning)throw; }
  }
  private async Task OpenFirstAsync() { if(EntityGrid.ItemsSource is List<EntityRecord> list&&list.Count>0)await OpenEntity(list[0].Kind,list[0].Id);else {ClearDetail(); DetailHost.Children.Clear();DetailHost.Children.Add(Text("검색 결과가 없습니다.",22));} }
  private async Task OpenInitialEntityAsync()
@@ -215,13 +230,13 @@ public partial class MainWindow : Window
   if(d.Entity.Kind=="Club") {var tools=new WrapPanel {Margin=new(0,10,0,0)};tools.Children.Add(Button("이벤트 만들기",(_,_)=>ShowTools("events",d.Entity.Id)));if(d.CityId is uint city)tools.Children.Add(Button("연고 도시 ↗",async(_,_)=> {if(CanLeave())await Guard(()=>OpenEntity("City",city),true);}));info.Children.Add(tools);}
   if(d.Entity.Ca.HasValue||d.Entity.Pa.HasValue) {
    var ability=new StackPanel {Width=112,Margin=new(6,6,0,0)};Grid.SetColumn(ability,2);panel.Children.Add(ability);
-   foreach(var v in new[]{("현재 능력",d.Entity.Ca,"#75DFC4"),("잠재 능력",d.Entity.Pa,"#E9C882")}) {var c=new Border {Background=Brush("#1B2532"),CornerRadius=new(7),Padding=new(12,9,12,10),Margin=new(0,0,0,8)};var s=new StackPanel();s.Children.Add(Text(v.Item1,10,"#929FB3"));var value=Text(v.Item2?.ToString()??"—",25,v.Item3,true);value.Margin=new(0,3,0,0);s.Children.Add(value);var bar=new ProgressBar {Minimum=0,Maximum=200,Value=v.Item2??0,Height=3,Margin=new(0,8,0,0),Foreground=Brush(v.Item3),Background=Brush("#33404F"),BorderThickness=new(0)};s.Children.Add(bar);c.Child=s;ability.Children.Add(c);}
+   foreach(var v in new[]{("현재 능력",d.Entity.Ca,"#75DFC4","ca"),("잠재 능력",d.Entity.Pa,"#E9C882","pa")}) {var c=new Border {Background=Brush("#1B2532"),CornerRadius=new(7),Padding=new(12,9,12,10),Margin=new(0,0,0,8)};var s=new StackPanel();s.Children.Add(Text(v.Item1,10,"#929FB3"));var value=Text("",25,v.Item3,true);value.Margin=new(0,3,0,0);s.Children.Add(value);var bar=new ProgressBar {Minimum=0,Maximum=200,Height=3,Margin=new(0,8,0,0),Foreground=Brush(v.Item3),Background=Brush("#33404F"),BorderThickness=new(0)};s.Children.Add(bar);c.Child=s;ability.Children.Add(c);TrackAbilityDisplay(()=>{bool hidden=AbilityVisibility.Current.IsHidden(v.Item4);value.Text=AbilityVisibility.Current.Format(v.Item4,v.Item2);value.FontSize=hidden?18:25;bar.Value=hidden?0:v.Item2??0;bar.Visibility=hidden?Visibility.Hidden:Visibility.Visible;});}
   }
   return panel;
  }
  private async Task RenderDetail()
  {
-  if(_detail==null)return;await StopDetailViewsAsync();var d=_detail;int renderVersion=++_renderVersion;_scoresHost=null;DetailHost.Children.Clear();DetailHost.Children.Add(d.Entity.Kind=="Club"&&(_tab is "스태프" or "선수단")?StaffClubHeader(d):Hero(d));
+  if(_detail==null)return;await StopDetailViewsAsync();var d=_detail;int renderVersion=++_renderVersion;_scoresHost=null;_abilityDisplayRefresh.Clear();DetailHost.Children.Clear();DetailHost.Children.Add(d.Entity.Kind=="Club"&&(_tab is "스태프" or "선수단")?StaffClubHeader(d):Hero(d));
   var tabs=new WrapPanel {Margin=new(0,0,0,18)};
   string[] names=d.Entity.Kind switch {"Player"=>["개요","성격·히든","포지션","선수 특성","계약·신상","커리어 계획","선호·관계","국적·이름","전체 능력치"],"Staff"=>["개요","직무 점수","성격·히든","계약·신상","커리어 계획","선호·관계","국적·이름","전체 능력치"],"Person"=>["개요","커리어 계획","선호·관계","국적·이름","전체 능력치"],"Club"=>["개요","선수단","스태프","재정","후원·구장"],_=>["개요","전체 능력치"]};
   foreach(var name in names) {var b=Button(name,async(_,_)=>await ChangeDetailTabAsync(name));b.Margin=new(0,0,6,0);b.Padding=new(11,8,11,8);if(name==_tab){b.Background=Brush("#263D39");b.Foreground=ResourceBrush("AccentBrush");}tabs.Children.Add(b);}
@@ -271,7 +286,12 @@ public partial class MainWindow : Window
    var label=Text(f.Label,12,"#BFC9D9");label.Margin=new(7,0,6,0);label.TextWrapping=TextWrapping.NoWrap;label.TextTrimming=TextTrimming.CharacterEllipsis;row.Children.Add(label);
    var edit=new TextBox {DataContext=f,Padding=new(3,2,6,2),BorderThickness=new(0),Background=Brush("Transparent"),FontSize=13,FontWeight=FontWeights.Bold,HorizontalContentAlignment=HorizontalAlignment.Right,VerticalContentAlignment=VerticalAlignment.Center,IsReadOnly=!f.Editable,ToolTip=$"{f.Label} · {f.Min:G}–{f.Max:G}\n{f.Hint}"};Grid.SetColumn(edit,1);edit.SetBinding(TextBox.TextProperty,new Binding("EditText") {Mode=BindingMode.TwoWay,UpdateSourceTrigger=UpdateSourceTrigger.PropertyChanged,ValidatesOnDataErrors=true});edit.SetBinding(TextBox.ForegroundProperty,new Binding("ColorHex"));
    edit.GotKeyboardFocus+=(_,_)=>edit.SelectAll();edit.PreviewKeyDown+=(_,e)=> { if(e.Key is Key.Up or Key.Down){f.Adjust(e.Key==Key.Up?1:-1);e.Handled=true;} };
-   row.Children.Add(edit);stack.Children.Add(row);
+   row.Children.Add(edit);
+   if(AbilityVisibility.AbilityKey(f.Key)!=null) {
+    var hidden=Text("숨김",12,"#929FB3");hidden.HorizontalAlignment=HorizontalAlignment.Right;hidden.Margin=new(0,0,6,0);Grid.SetColumn(hidden,1);row.Children.Add(hidden);
+    TrackAbilityDisplay(()=>{bool mask=AbilityVisibility.Current.IsHidden(f.Key);edit.Visibility=mask?Visibility.Collapsed:Visibility.Visible;hidden.Visibility=mask?Visibility.Visible:Visibility.Collapsed;row.ToolTip=mask?"CA·PA 표시 설정에서 숨겨진 항목입니다.":f.Hint;});
+   }
+   stack.Children.Add(row);
   }
   return new Border {Background=ResourceBrush("PanelBrush"),BorderBrush=ResourceBrush("BorderBrush"),BorderThickness=new(1),CornerRadius=new(8),Padding=new(13,14,13,12),Margin=new(0,0,0,12),Child=stack};
  }
@@ -280,6 +300,7 @@ public partial class MainWindow : Window
  {
   if(e.PropertyName!=nameof(EditableField.IsDirty)||_detail==null)return;
   int dirty=_detail.Fields.Count(f=>f.IsDirty);bool valid=_detail.Fields.All(f=>f.IsValid);DirtyBar.Visibility=dirty>0?Visibility.Visible:Visibility.Collapsed;DirtyLabel.Text=valid?$"{dirty}개 항목 변경됨  ·  아직 게임에 적용되지 않았습니다.":"입력값의 허용 범위를 확인하세요.";ReviewButton.IsEnabled=dirty>0&&valid;
+  RefreshAbilityReviewAvailability();
   if(_detail.Entity.Kind=="Staff") {_scoreTimer.Stop();_scoreTimer.Start();}
  }
  private async Task RefreshDraftScores()
@@ -320,28 +341,38 @@ public partial class MainWindow : Window
  private async Task ShowReview(JsonElement preview)
  {
   SetBusy(false);long viewEpoch=_liveViewEpoch;bool apply=false;var dialog=new Window {Owner=this,Title="변경 검토",Width=660,Height=560,WindowStartupLocation=WindowStartupLocation.CenterOwner,ResizeMode=ResizeMode.CanResize};_scalarReviewWindow=dialog;var dock=new DockPanel {Margin=new(24)};
-  var buttons=new StackPanel {Orientation=Orientation.Horizontal,HorizontalAlignment=HorizontalAlignment.Right,Margin=new(0,20,0,0)};DockPanel.SetDock(buttons,Dock.Bottom);dock.Children.Add(buttons);buttons.Children.Add(Button("돌아가기",(_,_)=>dialog.Close()));var save=Button("백업 후 게임에 적용",(_,_)=>{apply=true;dialog.Close();},true);save.Margin=new(10,0,0,0);save.IsEnabled=preview.GetProperty("can_apply").GetBoolean();buttons.Children.Add(save);
+  var buttons=new StackPanel {Orientation=Orientation.Horizontal,HorizontalAlignment=HorizontalAlignment.Right,Margin=new(0,20,0,0)};DockPanel.SetDock(buttons,Dock.Bottom);dock.Children.Add(buttons);buttons.Children.Add(Button("돌아가기",(_,_)=>dialog.Close()));var save=Button("백업 후 게임에 적용",(_,_)=>{apply=true;dialog.Close();},true);save.Margin=new(10,0,0,0);save.IsEnabled=preview.GetProperty("can_apply").GetBoolean()&&!preview.GetProperty("changes").EnumerateArray().Any(c=>AbilityVisibility.Current.IsHidden(c.TryGetProperty("key",out var key)?key.GetString():null));buttons.Children.Add(save);
   var top=new StackPanel {Margin=new(0,0,0,20)};DockPanel.SetDock(top,Dock.Top);dock.Children.Add(top);top.Children.Add(Text("변경 내용 확인",24,null,true));top.Children.Add(Text(_live?"원본 백업과 현재 값 검증 후 적용됩니다. 적용 뒤 FM에서 저장하세요.":"스냅샷 모드입니다. 실제 적용하려면 FM을 연결해야 합니다.",12,_live?"#929FB3":"#E9C882"));
-  var rows=new StackPanel();foreach(var c in preview.GetProperty("changes").EnumerateArray()) {var line=new DockPanel();var change=Text($"{c.GetProperty("before")}  →  {c.GetProperty("after")}",14,"#75DFC4",true);DockPanel.SetDock(change,Dock.Right);line.Children.Add(change);line.Children.Add(Text(c.GetProperty("label").GetString()??""));rows.Children.Add(new Border {Background=ResourceBrush("PanelBrush"),Padding=new(14),Margin=new(0,0,0,5),CornerRadius=new(6),Child=line});}dock.Children.Add(new ScrollViewer {Content=rows,VerticalScrollBarVisibility=ScrollBarVisibility.Auto});dialog.Content=dock;
+  var rows=new StackPanel();foreach(var c in preview.GetProperty("changes").EnumerateArray()) {var line=new DockPanel();string? key=c.TryGetProperty("key",out var fieldKey)?fieldKey.GetString():null;var change=Text($"{AbilityVisibility.Current.Format(key,c.GetProperty("before"))}  →  {AbilityVisibility.Current.Format(key,c.GetProperty("after"))}",14,"#75DFC4",true);DockPanel.SetDock(change,Dock.Right);line.Children.Add(change);line.Children.Add(Text(c.GetProperty("label").GetString()??""));rows.Children.Add(new Border {Background=ResourceBrush("PanelBrush"),Padding=new(14),Margin=new(0,0,0,5),CornerRadius=new(6),Child=line});}dock.Children.Add(new ScrollViewer {Content=rows,VerticalScrollBarVisibility=ScrollBarVisibility.Auto});dialog.Content=dock;
   if(_qaRunning&&!_live)dialog.Loaded+=async(_,_)=>{await Task.Delay(100);CaptureWindow(dialog,System.IO.Path.Combine(System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(_qaOutput!))!,"wpf-review.png"));dialog.Close();};
   try {dialog.ShowDialog();}finally{if(_scalarReviewWindow==dialog)_scalarReviewWindow=null;}
   if(apply&&viewEpoch==_liveViewEpoch&&_live&&_bridge!=null&&_detail!=null) {SetBusy(true,"원본 백업 · 적용 · 재검증 중…");var identity=(_detail.Entity.Kind,_detail.Entity.Id);var receipt=await _bridge.CallAsync("apply",new{token=preview.GetProperty("token").GetString()});await OpenEntity(identity.Kind,identity.Id,false);Status("적용 완료 · 원본이 백업되었습니다. FM에서 저장하면 세이브에 반영됩니다.");}
  }
  private async void ResetEdits_Click(object sender,RoutedEventArgs e) {if(_detail==null)return;foreach(var f in _detail.Fields)f.Reset();await RefreshDraftScores();}
- private async void Refresh_Click(object sender,RoutedEventArgs e) {if(_bridge==null||!CanLeave()||_busy)return;await Guard(async()=>{var current=_detail?.Entity;bool searchVisible=SearchScreen.IsVisible;await CloseWorkbenches();await DisposeSearchView();CloseTools();await StopDetailViewsAsync();ClearDetail();SetSummary(await _bridge.CallAsync("refresh"));if(searchVisible)await ShowSearchAsync(_kind);else{await SearchAsync();if(current!=null)await OpenEntity(current.Kind,current.Id,false);}},true);}
+ private async void Refresh_Click(object sender,RoutedEventArgs e) {if(_bridge==null||!CanLeave()||_busy)return;await Guard(RefreshCurrentAsync,true);}
+ private async Task RefreshCurrentAsync()
+ {
+  if(_bridge==null)return;
+  if(LeagueScreen.IsVisible||_returnToLeague){await RefreshLeagueContextAsync();return;}
+  var current=_detail?.Entity;bool searchVisible=SearchScreen.IsVisible;
+  await CloseWorkbenches();await DisposeSearchView();CloseTools();await StopDetailViewsAsync();ClearDetail();
+  SetSummary(await _bridge.CallAsync("refresh"));
+  if(searchVisible)await ShowSearchAsync(_kind);else{await SearchAsync();if(current!=null)await OpenEntity(current.Kind,current.Id,false);}
+ }
  private async void OwnClub_Click(object sender,RoutedEventArgs e) {if(!_busy&&_ownClub!=null&&CanLeave())await Guard(()=>OpenEntity("Club",_ownClub.Id),true);}
  private async void Back_Click(object sender,RoutedEventArgs e) {if(_busy||_routeIndex<=0||!CanLeave())return;var p=_routes[--_routeIndex];await Guard(()=>OpenEntity(p.Kind,p.Id,false),true);}
  private async void Forward_Click(object sender,RoutedEventArgs e) {if(_busy||_routeIndex>=_routes.Count-1||!CanLeave())return;var p=_routes[++_routeIndex];await Guard(()=>OpenEntity(p.Kind,p.Id,false),true);}
  private void ShowTools(string mode,uint? club=null,EntityRecord? staff=null) {if(_busy||_bridge==null)return;var window=new ToolsWindow(_bridge,mode,club??_ownClub?.Id,staff,_live) {Owner=this,BeforeUndo=BeforeHistoryUndoAsync,AfterUndo=AfterHistoryUndoAsync};_toolWindows.Add(window);window.Closed+=(_,_)=>_toolWindows.Remove(window);window.Show();}
  private void Events_Click(object sender,RoutedEventArgs e)=>ShowTools("events",_detail?.Entity.Kind=="Club"?_detail.Entity.Id:null);
  private void History_Click(object sender,RoutedEventArgs e)=>ShowTools("history");
- private async void Export_Click(object sender,RoutedEventArgs e) {if(_busy||_bridge==null)return;var d=new SaveFileDialog {Title="현재 목록 스냅샷 저장",Filter="JSON 스냅샷|*.json",FileName="touchline-snapshot.json"};if(d.ShowDialog(this)==true)await Guard(async()=> {await _bridge.CallAsync("export_snapshot",new{path=d.FileName});Status("스냅샷 저장 완료: "+d.FileName);},true);}
+ private async void Export_Click(object sender,RoutedEventArgs e) {if(_busy||_bridge==null||!ConfirmAbilityExport())return;var d=new SaveFileDialog {Title="현재 목록 스냅샷 저장",Filter="JSON 스냅샷|*.json",FileName="touchline-snapshot.json"};if(d.ShowDialog(this)==true)await Guard(async()=> {await _bridge.CallAsync("export_snapshot",new{path=d.FileName});Status("스냅샷 저장 완료: "+d.FileName);},true);}
  private void CloseTools() {foreach(var w in _toolWindows.ToArray())w.Close();}
  private void Minimize_Click(object sender,RoutedEventArgs e)=>WindowState=WindowState.Minimized;
  private void Maximize_Click(object sender,RoutedEventArgs e)=>WindowState=WindowState==WindowState.Maximized?WindowState.Normal:WindowState.Maximized;
  private void Close_Click(object sender,RoutedEventArgs e)=>Close();
  private async void OnClosing(object? sender,CancelEventArgs e) {if(_closing)return;e.Cancel=true;if((_busy||_livePollBusy)&&!_qaRunning){Status("진행 중인 작업이 완료된 뒤 닫아주세요.");return;}if(!CanLeave())return;await CloseSafely();}
- private async Task CloseSafely() {if(_closing)return;try{await CloseWorkbenches();}catch(OperationCanceledException){return;}DisableLiveWatch();await StopDetailViewsAsync();await DisposeSearchView();_closing=true;_ready=false;_searchTimer.Stop();_scoreTimer.Stop();CloseTools();if(_bridge!=null)await _bridge.DisposeAsync();SaveDesktopWindow();Close();}
+ private async Task CloseSafely() {if(_closing)return;try{await CloseWorkbenches();}catch(OperationCanceledException){return;}DisableLiveWatch();await StopDetailViewsAsync();await DisposeSearchView();_closing=true;_ready=false;_searchTimer.Stop();_scoreTimer.Stop();CloseTools();if(_bridge!=null)await _bridge.DisposeAsync();SaveDesktopWindow();LaunchPendingUpdate();Close();}
+ private void Updates_Click(object sender,RoutedEventArgs e) => OpenUpdateSettings();
 
  private async Task RunUiCheck()
  {
@@ -353,6 +384,9 @@ public partial class MainWindow : Window
   await CaptureLayoutEvidenceAsync(_qaOutput);
   _qaChecks.Add("native_wpf_rendered");
   RunUsabilityQa(dir);
+  if(App.Arg("--detailed-search-check")=="true") await RunDetailedSearchQaAsync(dir);
+  if(App.Arg("--connection-ui-check")=="true") await RunConnectionPresentationQaAsync(dir);
+  if(App.Arg("--ability-visibility-check")=="true") await RunAbilityVisibilityQaAsync(dir);
   if(App.Arg("--smoke")=="all") {
    var original=_detail?.Entity;
    if(_detail!=null) {var field=_detail.Fields.First(f=>f.Editable&&f.Max>f.Value);var before=field.Original;field.Adjust(1);if(!field.IsDirty)throw new Exception("edit did not mark dirty");var p=await _bridge.CallAsync("preview",new{kind=_detail.Entity.Kind,id=_detail.Entity.Id,edits=new[]{new{key=field.Key,value=field.Value}}});if(p.GetProperty("can_apply").GetBoolean())throw new Exception("offline preview unexpectedly writable");await ShowReview(p);field.Reset();if(field.IsDirty||field.Value!=before)throw new Exception("reset lost precise original");_qaChecks.Add("edit_preview_and_reset_preserve_original");}
@@ -372,6 +406,8 @@ public partial class MainWindow : Window
   }
   if(App.Arg("--search-check")=="true")await RunSearchQaAsync(dir);
   if(App.Arg("--search-columns-check")=="true")await RunSearchColumnsQaAsync(dir);
+  if(App.Arg("--nationality-search-check")=="true")await RunNationalitySearchQaAsync(dir);
+  if(App.Arg("--league-browser-check")=="true")await RunLeagueBrowserQaAsync(dir);
   if(App.Arg("--football-search-check")=="true")await RunFootballSearchQaAsync(dir);
   if(App.Arg("--position-sort-check")=="true")await RunPositionSortQaAsync(dir);
   if(App.Arg("--relations-check")=="true")await RunRelationsQaAsync(dir);

@@ -85,7 +85,23 @@ pub struct Entity {
 pub struct Index {
     pub session: Session,
     pub entities: Vec<Entity>,
+    /// Confirmed first-team competition links captured with this index.
+    /// Older snapshots preserve every club under the unclassified group.
+    #[serde(default)]
+    pub club_leagues: Vec<ClubLeague>,
     pub warnings: Vec<String>,
+}
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClubLeague {
+    pub club_id: u32,
+    #[serde(default)]
+    pub league_id: Option<u32>,
+    #[serde(default)]
+    pub league: String,
+    #[serde(default)]
+    pub nation_id: Option<u32>,
+    #[serde(default)]
+    pub nation: String,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Storage {

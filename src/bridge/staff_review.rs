@@ -320,6 +320,7 @@ mod tests {
             entities.push(d.entity);
         }
         let index = Index {
+            club_leagues: Vec::new(),
             session: Session {
                 pid: 0,
                 created: 0,

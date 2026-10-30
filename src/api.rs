@@ -384,12 +384,14 @@ pub fn run(args: &[String]) -> Result<()> {
                 // original receipt remains available through history commands.
                 if let Err(e) = send(&mut stream, 200, &value) {
                     eprintln!("API response not delivered: {e}");
+                    crate::runtime_log::error("api","response_failed","API response could not be delivered",&e);
                 }
                 if stop {
                     break;
                 }
             }
             Err(HttpError(code, message)) => {
+                crate::runtime_log::event("error","api","request_rejected",&format!("HTTP {code}: {message}"));
                 let _ = send(&mut stream, code, &json!({"ok":false,"error":message}));
             }
         }

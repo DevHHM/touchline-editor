@@ -19,6 +19,7 @@ Run all commands from the extracted source repository root. Keep its folder stru
 ```powershell
 cargo test --locked
 dotnet run --project desktop/Touchline.ClientTests/Touchline.ClientTests.csproj --configuration Release
+dotnet run --project desktop/Touchline.UpdaterTests/Touchline.UpdaterTests.csproj --configuration Release
 python -m unittest discover -s tools -p test_touchline_api.py
 ```
 
@@ -34,7 +35,7 @@ powershell -NoProfile -File .\build-wpf.ps1
 ```
 
 The builder runs tests, builds the Rust engine, publishes the self-contained WPF app, builds the native
-launcher and creates `dist/Touchline-Editor-0.12.0-win-x64.zip` with its SHA-256 sidecar. The output folder
+launcher and creates `dist/Touchline-Editor-0.14.1-win-x64.zip` with its SHA-256 sidecar. The output folder
 must be empty; existing release folders and ZIP files are not overwritten. The build uses a locally
 installed `dotnet` SDK; its SDK directory must contain the official .NET license/third-party notices.
 
@@ -71,3 +72,7 @@ No project-level license was present in the original project and this source sna
 one. Making the source visible is not a grant of an MIT/Apache or other open-source license. The
 upstream licenses of bundled fonts and restored dependencies continue to apply. See
 [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
+
+## Optional diagnostic collector
+
+The separate Cloudflare Worker source is in `services/diagnostics-collector`. See its README for deployment. The source includes no server secrets. Run `npm ci` and `npm test` there with Node 22 or newer. Local credential entry helpers and local Wrangler state are intentionally excluded.

@@ -1,4 +1,4 @@
-# Touchline Editor 0.12.0
+# Touchline Editor 0.14.1
 
 Football Manager의 선수·스태프·구단·도시 정보를 조회하고, 지원되는 수치를 수정하는 **Windows 네이티브 에디터**입니다. Rust 엔진과 C# / WPF 화면으로 만들었으며 한국어 UI와 Pretendard 글꼴을 제공합니다.
 
@@ -6,8 +6,8 @@ Football Manager의 선수·스태프·구단·도시 정보를 조회하고, �
 
 ## 다운로드
 
-- [Windows x64 실행용 ZIP](https://github.com/DevHHM/touchline-editor/releases/download/v0.12.0/Touchline-Editor-0.12.0-win-x64.zip)
-- [릴리스 설명·SHA-256·소스 ZIP](https://github.com/DevHHM/touchline-editor/releases/tag/v0.12.0)
+- [Windows x64 실행용 ZIP](https://github.com/DevHHM/touchline-editor/releases/download/v0.14.1/Touchline-Editor-0.14.1-win-x64.zip)
+- [릴리스 설명·SHA-256·소스 ZIP](https://github.com/DevHHM/touchline-editor/releases/tag/v0.14.1)
 - [문제 제보](https://github.com/DevHHM/touchline-editor/issues)
 
 일반 사용자는 **win-x64.zip**을 받으세요. GitHub의 자동 생성 `Source code` 압축파일은 실행용 프로그램이 아닙니다.
@@ -42,11 +42,18 @@ Football Manager의 선수·스태프·구단·도시 정보를 조회하고, �
 
 FM27에서 **관계·커리어 계획·추가 국적 편집, 후원 이벤트, 성장 추정**은 아직 지원하지 않습니다. 미검증 계약·건강·선호 플레이 필드 및 기타 인물의 성격 편집도 지원 대상에서 제외됩니다. FM26용 기능이 보이더라도 현재 연결의 지원 상태에 따라 차단될 수 있습니다.
 
-## 검증 범위
+## 0.14.1 변경 사항
 
-0.12.0 배포 엔진의 Rust 테스트 272개, 데스크톱 클라이언트 테스트 140개, Python API 클라이언트 테스트 14개가 통과했습니다. 별도로 FM27 실제 세이브의 읽기·미리보기 16개 기능군과 네이티브 화면을 확인했습니다.
+- 상단 CA·PA 표시 메뉴에서 현재 능력과 잠재 능력을 각각 숨깁니다.
+- 검색, 상세 정보, 비교, 선수단·스태프, 변경 이력에 함께 적용합니다.
+- 막대, 복사 값, 툴팁과 성장 참고치도 가리며 숨긴 능력의 정렬·검색과 변경 적용을 막습니다.
+- 저장 조건과 수정 초안을 보존하고, 표시 설정은 다시 실행한 뒤에도 유지됩니다.
+- 원본 JSON/CSV 내보내기는 데이터를 보존하며 숨기기 사용 중 CA·PA 포함 안내를 표시합니다.
+- 0.14.0의 포지션 검색, 연결 오류 안내, 진단 기능과 자동 업데이트를 포함합니다.
 
-실게임 검사는 **게임 값을 쓰지 않고** 수행했습니다. 실제 세이브의 모든 적용·되돌리기·저장 후 재로딩 조합을 검증한 것은 아닙니다. 미지원 기능은 이유를 표시하고 차단합니다. 상세 결과는 실행용 ZIP의 `docs/검증결과.ko.md`를 참고하세요.
+세부 변경 내용과 검증 범위는 [릴리스 설명](distribution/RELEASE-0.14.1.ko.md),
+데이터 수집 범위는 [진단 안내](distribution/DIAGNOSTICS.ko.md)를 참고하세요.
+모든 사용자 PC의 연결 성공이나 모든 실제 세이브 편집 조합을 검증한 것은 아닙니다.
 
 ## 소스와 빌드
 

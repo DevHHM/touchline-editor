@@ -1,8 +1,11 @@
-TOUCHLINE EDITOR 0.12.0 — Windows x64
+TOUCHLINE EDITOR 0.14.1 — Windows x64
 
 1. ZIP 전체를 원하는 새 폴더에 압축 해제하세요.
 2. 최상위의 Touchline Editor.exe를 실행하세요.
 3. 실행 중인 FM에 연결하거나, 저장해 둔 Touchline 스냅샷을 여세요.
+
+상단 CA·PA 표시 메뉴에서 현재 능력과 잠재 능력을 각각 숨길 수 있습니다.
+설정은 자동 저장되며 원래 게임 수치는 바뀌지 않습니다.
 
 별도 .NET, Chrome, WebView 설치는 필요 없습니다.
 Windows 10/11 x64용이며 ARM 네이티브 배포판은 아닙니다.

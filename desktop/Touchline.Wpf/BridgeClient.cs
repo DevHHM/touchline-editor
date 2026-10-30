@@ -7,8 +7,9 @@ namespace Touchline.Wpf;
 
 public sealed class BridgeException : Exception
 {
-    public BridgeException(string message) : base(message) { }
-    public BridgeException(string message, Exception inner) : base(message, inner) { }
+    public bool DiagnosticDetailsAllowed { get; }
+    public BridgeException(string message, bool diagnosticDetailsAllowed = false) : base(message) { DiagnosticDetailsAllowed = diagnosticDetailsAllowed; }
+    public BridgeException(string message, Exception inner) : base(message, inner) { DiagnosticDetailsAllowed = true; }
 }
 
 /// <summary>Owns one hidden Rust bridge, with one in-flight protocol request.</summary>
@@ -22,6 +23,7 @@ public sealed class BridgeClient : IAsyncDisposable
     private int _disposed;
     private long _nextId;
     private int _uncertainRequest;
+    private readonly DiagnosticsLog? _diagnostics;
 
     public event Action<string>? Diagnostic;
     // A broken response is not enough to replace a possibly writing worker.
@@ -31,8 +33,9 @@ public sealed class BridgeClient : IAsyncDisposable
         get { try { return _process.HasExited; } catch (InvalidOperationException) { return false; } }
     }
 
-    public BridgeClient(string exePath)
+    public BridgeClient(string exePath, DiagnosticsLog? diagnostics = null)
     {
+        _diagnostics = diagnostics ?? DiagnosticsLog.Current;
         if (string.IsNullOrWhiteSpace(exePath)) throw new ArgumentException("Rust 실행 파일 경로가 필요합니다.", nameof(exePath));
         exePath = Path.GetFullPath(exePath);
         if (!File.Exists(exePath)) throw new FileNotFoundException("Rust 엔진 실행 파일을 찾을 수 없습니다.", exePath);
@@ -56,9 +59,15 @@ public sealed class BridgeClient : IAsyncDisposable
         {
             if (!_process.Start()) throw new BridgeException("Rust 엔진을 시작하지 못했습니다.");
             _process.StandardInput.AutoFlush = true;
+            _process.EnableRaisingEvents = true;
+            _process.Exited += (_, _) => {
+                try { _diagnostics?.Write("lifecycle", "engine_exited", "exit_code=" + _process.ExitCode); } catch { }
+            };
+            _diagnostics?.Write("lifecycle", "engine_started");
         }
-        catch
+        catch(Exception error)
         {
+            _diagnostics?.Failure("lifecycle", "engine_start_failed", error);
             _process.Dispose();
             _lifetime.Dispose();
             throw;
@@ -67,6 +76,17 @@ public sealed class BridgeClient : IAsyncDisposable
     }
 
     public async Task<JsonElement> CallAsync(string command, object? args = null, CancellationToken cancellationToken = default)
+    {
+        try { return await CallCoreAsync(command, args, cancellationToken).ConfigureAwait(false); }
+        catch(Exception error) {
+            // Only the command identifier and exception chain, never request/response contents.
+            if(error is not OperationCanceledException)
+                _diagnostics?.Failure("command", command, error, command == "connection_poll" ? "poll_failure" : null);
+            throw;
+        }
+    }
+
+    private async Task<JsonElement> CallCoreAsync(string command, object? args, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(command);
         ThrowIfUnavailable();
@@ -99,7 +119,7 @@ public sealed class BridgeClient : IAsyncDisposable
                 var error = root.TryGetProperty("error", out var errorElement)
                     ? errorElement.ValueKind == JsonValueKind.String ? errorElement.GetString() : errorElement.GetRawText()
                     : "요청을 처리하지 못했습니다.";
-                throw new BridgeException(error ?? "요청을 처리하지 못했습니다.");
+                throw new BridgeException(error ?? "요청을 처리하지 못했습니다.", command is "status" or "connect" or "connection_poll" or "connection_reconnect");
             }
             return root.TryGetProperty("data", out var data) ? data.Clone() : JsonSerializer.SerializeToElement<object?>(null);
         }

@@ -24,6 +24,9 @@ if (args.Contains("--bridge"))
         if (command == "malformed") { Console.WriteLine("{}"); continue; }
         if (command == "exit") return 0;
         if (command == "diagnostic") Console.Error.WriteLine("테스트 진단");
+        if(command=="connect"&&root.GetProperty("args").TryGetProperty("failForDiagnostics",out _)) {
+            Console.WriteLine(JsonSerializer.Serialize(new{id,ok=false,error="FM 접근 실패 0x12345678 token=backend-secret",data=(object?)null}));continue;
+        }
         Console.WriteLine(JsonSerializer.Serialize(new
         {
             id, ok = command != "fail", error = command == "fail" ? "테스트 거절" : null,
@@ -38,6 +41,12 @@ void Check(bool condition, string name)
 {
     if (!condition) throw new Exception("FAILED: " + name);
     passed.Add(name);
+}
+
+if(args.Contains("--sharing-tests")) {
+    await DiagnosticSharingTests.RunAsync(Check);
+    Console.WriteLine(JsonSerializer.Serialize(new{passed=passed.Count,failed=0,tests=passed,fm_accessed=false}));
+    return 0;
 }
 
 var reload = new LiveReloadState();
@@ -60,10 +69,15 @@ Check(reload.Observe(new() { State = "waiting", Monitoring = true, Generation = 
 reload.Disable();
 Check(reload.Generation == null && !reload.Invalidated && !reload.Enabled, "reload_stop_clears_lifecycle_state");
 LiveReloadTests.Run(Check);
+await ConnectionRecoveryTests.RunAsync(Check);
+PositionSearchTests.Run(Check);
+await DiagnosticsTests.RunAsync(Check);
+await DiagnosticSharingTests.RunAsync(Check);
 GameEditionTests.Run(Check);
 DetailPresentationTests.Run(Check);
 PackagePathsTests.Run(Check);
 DesktopUsabilityTests.Run(Check);
+AbilityVisibilityTests.Run(Check);
 await ClubGrowthAvailabilityTests.RunAsync(Check);
 
 var detail = JsonSerializer.Deserialize<DetailRecord>("""
@@ -89,6 +103,9 @@ var mixedPositions = tacticalPeople.Concat(new[] { staffRoleA, staffRoleB }).ToL
 bool mixedTransitive = new[] { false, true }.All(descending => mixedPositions.All(a => mixedPositions.All(b => mixedPositions.All(c => PositionOrder.Compare(a, b, descending) > 0 || PositionOrder.Compare(b, c, descending) > 0 || PositionOrder.Compare(a, c, descending) <= 0))));
 Check(mixedTransitive && PositionOrder.Compare(tacticalPeople[0], staffRoleA) < 0 && PositionOrder.Compare(tacticalPeople[0], staffRoleA, true) < 0, "mixed_position_staff_comparer_transitive");
 PositionFilterTests.Run(Check);
+NationalityFilterTests.Run(Check);
+SearchConditionTests.Run(Check);
+LeagueBrowserTests.Run(Check);
 SearchColumnTests.Run(Check);
 Check(field.EditText == "14" && field.Value == 13.625 && field.Original == 13.625 && !field.IsDirty, "rounded_display_preserves_fractional_baseline");
 field.EditText = field.EditText;

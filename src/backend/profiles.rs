@@ -11,6 +11,9 @@ pub struct ReadLayout {
     pub date_rva: u64,
     pub person_vector_offset: u64,
     pub person_indirect_vector_offset: u64,
+    /// Verified FM27 accessor falls back to the indirect table when the inline
+    /// table has no slots, even while the global registry mode remains zero.
+    pub person_empty_inline_fallback: bool,
     pub city_database_rva: u64,
     pub nation_database_rva: u64,
 }
@@ -42,6 +45,7 @@ pub const FM26: BuildProfile = BuildProfile {
     read_verified:true,scalar_write_verified:true,native_allocate_verified:true,
     layout:Some(ReadLayout { database_rva:0x4E495E0,registry_mode_rva:0x4E49C70,date_rva:0x4DF3C18,
         person_vector_offset:0x60,person_indirect_vector_offset:0x80,
+        person_empty_inline_fallback:false,
         city_database_rva:0x4E49580,nation_database_rva:0x4E495A0 }),
     code_signatures:&[],
 };
@@ -54,17 +58,27 @@ pub const FM27: BuildProfile = BuildProfile {
     read_verified:true,scalar_write_verified:true,native_allocate_verified:false,
     layout:Some(ReadLayout { database_rva:0x5703738,registry_mode_rva:0x5703DE0,date_rva:0x56AD378,
         person_vector_offset:0x60,person_indirect_vector_offset:0x80,
+        person_empty_inline_fallback:true,
         city_database_rva:0x57036D8,nation_database_rva:0x57036F8 }),
     // output/fm27_port_backend/verified-native-signatures.json. All ranges are
     // outside the user's existing staff-filter skin patch sites.
     code_signatures:&[
         CodeSignature {name:"person registry accessor",rva:0xA71ED4,
             bytes:&[0x48,0x8B,0x0D,0x5D,0x18,0xC9,0x04,0x48,0x85,0xC9,0x74,0x7C,0x80,0x3D,0xF9,0x1E,0xC9,0x04,0x00,0x75,0x1A,0x48,0x8B,0x51,0x60,0x4C,0x8B,0x41,0x68,0x49,0x29,0xD0]},
+        // The inline-empty fallback is enabled only with this independently
+        // verified branch and indirect-vector accessor (also checked on disk).
+        CodeSignature {name:"person registry indirect fallback",rva:0xA71EF4,
+            bytes:&[0x49,0xC1,0xF8,0x03,0x49,0x39,0xC0,0x76,0x06,0x48,0x8D,0x04,0xC2,0xEB,0x22,0x48,0x8B,0x91,0x80,0x00,0x00,0x00,0x48,0x8B,0x0A,0x48,0x8B,0x52,0x08,0x48,0x29,0xCA,0x74,0x46,0x48,0xC1,0xFA,0x03,0x89,0xC0,0x48,0x39,0xC2,0x76,0x3B,0x48,0x8D,0x04,0xC1]},
         CodeSignature {name:"current date accessor",rva:0x4A0114,bytes:&[0x8B,0x0D,0x5E,0xD2,0x20,0x05]},
         CodeSignature {name:"player current ability",rva:0x15D4F70,bytes:&[0x0F,0xB7,0x81,0x64,0x02,0x00,0x00,0xC3]},
         CodeSignature {name:"player potential ability",rva:0x15F7060,bytes:&[0x0F,0xB7,0x81,0x66,0x02,0x00,0x00,0xC3]},
         CodeSignature {name:"staff current ability",rva:0x17E1541,bytes:&[0x0F,0xBF,0x73,0xDA]},
         CodeSignature {name:"staff potential ability",rva:0x17E04CB,bytes:&[0x0F,0xBF,0x73,0xDC]},
+        // Independent FM27 property-dispatch evidence: reference/fm27-compatibility/league-navigation.json.
+        CodeSignature {name:"team current division",rva:0x11FDCB8,bytes:&[0x48,0x8B,0x4F,0x50]},
+        CodeSignature {name:"competition nation",rva:0x11AF492,bytes:&[0x48,0x8B,0x4F,0x60]},
+        CodeSignature {name:"competition full name",rva:0x11B391F,bytes:&[0x48,0x8B,0x4F,0x40]},
+        CodeSignature {name:"competition alternate name",rva:0x11B3E49,bytes:&[0x48,0x8B,0x4F,0x48]},
     ],
 };
 pub const ALL: &[BuildProfile] = &[FM26, FM27];

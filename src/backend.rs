@@ -61,14 +61,60 @@ fn is_person_registry_type(name:&str)->bool {
         || name.contains("SUPPORT_STAFF") || name.contains("AGENT")
 }
 fn registry_with_layout(p:&Process,base:u64,db:u64,layout:&profiles::ReadLayout)->Result<(u64,u64)> {
-    let flag=p.u8(base+layout.registry_mode_rva)?;
+    registry_with_reader(base,db,layout,|address,size|p.read(address,size))
+}
+#[derive(Debug)]
+pub(crate) struct EmptyRegistry;
+impl std::fmt::Display for EmptyRegistry {
+    fn fmt(&self, f:&mut std::fmt::Formatter<'_>)->std::fmt::Result {
+        f.write_str("세이브 인물 목록이 비어 있습니다. 세이브 로드가 완료됐는지 확인해 주세요")
+    }
+}
+impl std::error::Error for EmptyRegistry {}
+fn registry_header(raw:&[u8])->Result<Option<(u64,u64)>> {
+    ensure!(raw.len()==16,"인물 레지스트리 헤더 크기 오류");
+    let (begin,end)=(word64(raw,0),word64(raw,8));
+    if begin==end && (begin==0 || pointer(begin)==begin) { return Ok(None); }
+    let bytes=end.checked_sub(begin).context("인물 레지스트리 역방향 범위 오류")?;
+    ensure!(pointer(begin)==begin && begin!=0 && pointer(end)==end && bytes>0
+        && bytes<16_000_000 && bytes%8==0,"인물 레지스트리 범위 검증 실패");
+    Ok(Some((begin,end)))
+}
+fn registry_with_reader(base:u64,db:u64,layout:&profiles::ReadLayout,
+    mut read:impl FnMut(u64,usize)->Result<Vec<u8>>)->Result<(u64,u64)> {
+    ensure!(pointer(db)==db && db!=0,"인물 데이터베이스 주소 검증 실패");
+    let flag_bytes=read(base+layout.registry_mode_rva,1)?;
+    ensure!(flag_bytes.len()==1,"인물 레지스트리 모드 크기 오류");
+    let flag=flag_bytes[0];
     ensure!(flag<=1,"인물 레지스트리 모드 검증 실패");
-    let vector=if flag==0 {db+layout.person_vector_offset} else {p.u64(db+layout.person_indirect_vector_offset)?};
-    let raw=p.read(vector,16)?;
-    let (b,e)=(word64(&raw,0),word64(&raw,8));
-    ensure!(b>=0x10000 && e>b && e-b<16_000_000 && (e-b)%8==0,
-        "세이브가 아직 로드되지 않았거나 인물 목록이 변경됐습니다");
-    Ok((b,e))
+    let mut guards=vec![(base+layout.registry_mode_rva,flag_bytes)];
+    let direct=if flag==0 {
+        let address=db+layout.person_vector_offset;
+        let raw=read(address,16)?;
+        let range=registry_header(&raw)?; // Never bypass a malformed inline table.
+        guards.push((address,raw));
+        range
+    } else {None};
+    let range=if let Some(range)=direct {range} else {
+        if flag==0 && !layout.person_empty_inline_fallback {return Err(anyhow::anyhow!(EmptyRegistry));}
+        // FM27 native accessor A71ED4: mode 0 uses +60/+68 when a requested
+        // index exists, otherwise follows +80. Scope this correction to an
+        // empty, valid inline header; mixed tables are not inferred here.
+        let route_address=db+layout.person_indirect_vector_offset;
+        let route=read(route_address,8)?;
+        ensure!(route.len()==8,"인물 레지스트리 간접 주소 크기 오류");
+        let vector=word64(&route,0);
+        ensure!(pointer(vector)==vector && vector!=0,"인물 레지스트리 간접 주소 검증 실패");
+        guards.push((route_address,route));
+        let raw=read(vector,16)?;
+        let range=registry_header(&raw)?.ok_or_else(||anyhow::anyhow!(EmptyRegistry))?;
+        guards.push((vector,raw));
+        range
+    };
+    for (address,expected) in guards {
+        ensure!(read(address,expected.len())?==expected,"조회 중 인물 레지스트리 경로가 변경됐습니다");
+    }
+    Ok(range)
 }
 pub fn type_name(p: &Process, s: &Session, vtable: u64) -> String {
     type_info(p, s.module_base, s.module_size, vtable)
@@ -480,12 +526,14 @@ pub fn connect(progress: impl Fn(String)) -> Result<Index> {
     for (pid, _) in candidates {
         match connect_pid(pid, &progress) {
             Ok(index) => return Ok(index),
-            Err(e) => reasons.push(format!("PID {pid}: {e}")),
+            Err(e) => reasons.push(format!("PID {pid}: {e:#}")),
         }
     }
     bail!("FM 연결 실패\n{}", reasons.join("\n"))
 }
-fn connect_pid(pid: u32, progress: &impl Fn(String)) -> Result<Index> {
+/// Build only the process selected by the stable identity probe. Connection
+/// recovery must not silently switch to a different running FM instance.
+pub(crate) fn connect_pid(pid: u32, progress: &impl Fn(String)) -> Result<Index> {
     let p = Process::open(pid, false)?;
     let m = p
         .modules()?
@@ -691,6 +739,7 @@ fn connect_pid(pid: u32, progress: &impl Fn(String)) -> Result<Index> {
     let mut index = Index {
         session,
         entities: rows,
+        club_leagues: Vec::new(),
         warnings: Vec::new(),
     };
     if human_clubs.len() == 1 {
@@ -733,6 +782,8 @@ fn connect_pid(pid: u32, progress: &impl Fn(String)) -> Result<Index> {
         }
     }
     crate::extras::append_clubs_and_cities(&p, &mut index)?;
+    progress("구단의 실제 소속 리그를 정리하고 있습니다".into());
+    crate::leagues::populate(&p, &mut index);
     // Clubs appended from the wider database have no player evidence in this
     // index, so their default category remains unknown.
     validate_with(&p, &index.session)?;
@@ -1099,6 +1150,70 @@ pub fn detail(s: &Session, e: &Entity) -> Result<Detail> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn registry_fixture(profile:&profiles::BuildProfile, mode:u8, direct:(u64,u64), indirect:(u64,u64))->HashMap<u64,Vec<u8>> {
+        let layout=profile.require_read_layout().unwrap();
+        let header=|(b,e):(u64,u64)|[b.to_le_bytes(),e.to_le_bytes()].concat();
+        HashMap::from([
+            (0x180000000+layout.registry_mode_rva,vec![mode]),
+            (0x20000+layout.person_vector_offset,header(direct)),
+            (0x20000+layout.person_indirect_vector_offset,0x30000u64.to_le_bytes().to_vec()),
+            (0x30000,header(indirect)),
+        ])
+    }
+    fn fixture_registry(profile:&profiles::BuildProfile,memory:&HashMap<u64,Vec<u8>>)->Result<(u64,u64)> {
+        registry_with_reader(0x180000000,0x20000,profile.require_read_layout().unwrap(),|address,size| {
+            let bytes=memory.get(&address).with_context(||format!("unexpected read {address:x}"))?;
+            ensure!(bytes.len()==size,"fixture read size mismatch");Ok(bytes.clone())
+        })
+    }
+    #[test]
+    fn registry_routes_mode_zero_and_mode_one_without_changing_nonempty_inline() {
+        let direct=(0x40000,0x40080);let indirect=(0x50000,0x50100);
+        for profile in [&profiles::FM26,&profiles::FM27] {
+            assert_eq!(fixture_registry(profile,&registry_fixture(profile,0,direct,indirect)).unwrap(),direct);
+            assert_eq!(fixture_registry(profile,&registry_fixture(profile,1,direct,indirect)).unwrap(),indirect);
+        }
+    }
+    #[test]
+    fn fm27_empty_inline_uses_native_indirect_route_but_fm26_remains_unchanged() {
+        let indirect=(0x50000,0x50100);
+        for direct in [(0,0),(0x40000,0x40000)] {
+            assert_eq!(fixture_registry(&profiles::FM27,&registry_fixture(&profiles::FM27,0,direct,indirect)).unwrap(),indirect);
+            let error=fixture_registry(&profiles::FM26,&registry_fixture(&profiles::FM26,0,direct,indirect)).unwrap_err();
+            assert!(error.downcast_ref::<EmptyRegistry>().is_some());
+        }
+    }
+    #[test]
+    fn registry_fallback_never_accepts_malformed_inline_or_indirect() {
+        for direct in [(1,1),(0x50000,0x40000),(0x40000,0x40003),(0,0x40000),(0x40000,0x2000000)] {
+            let error=fixture_registry(&profiles::FM27,&registry_fixture(&profiles::FM27,0,direct,(0x50000,0x50100))).unwrap_err();
+            assert!(error.downcast_ref::<EmptyRegistry>().is_none());
+        }
+        let mut memory=registry_fixture(&profiles::FM27,0,(0,0),(0x50000,0x50100));
+        memory.insert(0x20080,vec![0;8]);
+        assert!(fixture_registry(&profiles::FM27,&memory).unwrap_err().to_string().contains("간접 주소 검증 실패"));
+        for invalid in [(0x50000,0x40000),(1,1),(0x50000,0x50007)] {
+            assert!(fixture_registry(&profiles::FM27,&registry_fixture(&profiles::FM27,0,(0,0),invalid)).is_err());
+        }
+        assert!(fixture_registry(&profiles::FM27,&registry_fixture(&profiles::FM27,2,(0,0),(0x50000,0x50100))).is_err());
+        let error=fixture_registry(&profiles::FM27,&registry_fixture(&profiles::FM27,0,(0,0),(0,0))).unwrap_err();
+        assert!(error.downcast_ref::<EmptyRegistry>().is_some());
+    }
+    #[test]
+    fn registry_rejects_a_route_changed_during_read() {
+        let layout=profiles::FM27.require_read_layout().unwrap();
+        for changed in [0x180000000+layout.registry_mode_rva,0x20060,0x20080,0x30000] {
+            let memory=registry_fixture(&profiles::FM27,0,(0,0),(0x50000,0x50100));
+            let mut counts=HashMap::<u64,usize>::new();
+            let result=registry_with_reader(0x180000000,0x20000,layout,|address,size| {
+                let count=counts.entry(address).or_default();*count+=1;
+                let mut bytes=memory.get(&address).unwrap().clone();assert_eq!(bytes.len(),size);
+                if address==changed && *count>1 {bytes[0]^=1;}
+                Ok(bytes)
+            });
+            assert!(result.unwrap_err().to_string().contains("경로가 변경"));
+        }
+    }
     #[test]
     fn nationality_index_cache_reads_each_country_once_including_unreadable_links() {
         let mut cache = HashMap::new();

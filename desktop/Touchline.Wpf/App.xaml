@@ -1,4 +1,4 @@
-<Application x:Class="Touchline.Wpf.App" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml" xmlns:media="clr-namespace:System.Windows.Media;assembly=PresentationCore" xmlns:local="clr-namespace:Touchline.Wpf">
+﻿<Application x:Class="Touchline.Wpf.App" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml" xmlns:media="clr-namespace:System.Windows.Media;assembly=PresentationCore" xmlns:local="clr-namespace:Touchline.Wpf">
  <Application.Resources><ResourceDictionary>
   <ResourceDictionary.MergedDictionaries><ui:ThemesDictionary Theme="Dark"/><ui:ControlsDictionary/></ResourceDictionary.MergedDictionaries>
   <x:Static x:Key="AppFont" Member="local:Typography.AppFont"/>
@@ -12,6 +12,9 @@
   <SolidColorBrush x:Key="AccentBrush" Color="#75DFC4"/>
   <SolidColorBrush x:Key="BorderBrush" Color="#2A3343"/>
   <SolidColorBrush x:Key="GoldBrush" Color="#E9C882"/>
+  <SolidColorBrush x:Key="MenuSurfaceBrush" Color="#202836"/>
+  <SolidColorBrush x:Key="MenuHoverBrush" Color="#30445E"/>
+  <SolidColorBrush x:Key="MenuBorderBrush" Color="#46556B"/>
   <Style TargetType="Window"><Setter Property="Icon" Value="pack://application:,,,/Icons/touchline.ico"/><Setter Property="FontWeight" Value="Medium"/><Setter Property="FontFamily" Value="{StaticResource AppFont}"/><Setter Property="FontSize" Value="13"/><Setter Property="Background" Value="{StaticResource BaseBrush}"/><Setter Property="Foreground" Value="{StaticResource InkBrush}"/><Setter Property="TextOptions.TextFormattingMode" Value="Display"/><Setter Property="TextOptions.TextRenderingMode" Value="{DynamicResource AppTextRenderingMode}"/><Setter Property="UseLayoutRounding" Value="True"/><Setter Property="SnapsToDevicePixels" Value="True"/></Style>
   <Style TargetType="TextBlock"><Setter Property="FontWeight" Value="Medium"/><Setter Property="VerticalAlignment" Value="Center"/><Setter Property="FontFamily" Value="{StaticResource AppFont}"/></Style>
   <Style x:Key="Caption" TargetType="TextBlock"><Setter Property="FontWeight" Value="Medium"/><Setter Property="Foreground" Value="{StaticResource MutedBrush}"/><Setter Property="FontSize" Value="11"/><Setter Property="Margin" Value="0,0,0,8"/></Style>
@@ -21,13 +24,79 @@
   <Style x:Key="NavButton" TargetType="Button" BasedOn="{StaticResource QuietButton}"><Setter Property="HorizontalContentAlignment" Value="Left"/><Setter Property="Padding" Value="14,10"/><Setter Property="Margin" Value="8,2"/></Style>
   <Style TargetType="TextBox"><Setter Property="FontWeight" Value="Medium"/><Setter Property="Background" Value="#111823"/><Setter Property="Foreground" Value="{StaticResource InkBrush}"/><Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/><Setter Property="BorderThickness" Value="1"/><Setter Property="Padding" Value="9,7"/><Setter Property="CaretBrush" Value="{StaticResource AccentBrush}"/><Setter Property="SelectionBrush" Value="#3B756E"/><Setter Property="FontSize" Value="13"/></Style>
   <Style TargetType="ComboBoxItem"><Setter Property="FontWeight" Value="Medium"/><Setter Property="Foreground" Value="{StaticResource InkBrush}"/><Setter Property="Background" Value="Transparent"/><Setter Property="Padding" Value="10,8"/><Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ComboBoxItem"><Border x:Name="ItemBorder" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}"><ContentPresenter/></Border><ControlTemplate.Triggers><Trigger Property="IsHighlighted" Value="True"><Setter TargetName="ItemBorder" Property="Background" Value="#2B4941"/></Trigger><Trigger Property="IsSelected" Value="True"><Setter Property="Foreground" Value="#75DFC4"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter></Style>
-  <Style TargetType="ComboBox"><Setter Property="FontWeight" Value="Medium"/><Setter Property="Foreground" Value="{StaticResource InkBrush}"/><Setter Property="Background" Value="{StaticResource RaisedBrush}"/><Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/><Setter Property="Padding" Value="8,6"/><Setter Property="MinHeight" Value="32"/><Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ComboBox"><Grid><ToggleButton Style="{x:Null}" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" Focusable="False" IsChecked="{Binding IsDropDownOpen,RelativeSource={RelativeSource TemplatedParent},Mode=TwoWay}"><ToggleButton.Template><ControlTemplate TargetType="ToggleButton"><Border Background="#202836" BorderBrush="#344052" BorderThickness="1" CornerRadius="5"><TextBlock Text="⌄" HorizontalAlignment="Right" Margin="0,0,9,0" Foreground="#929FB3"/></Border></ControlTemplate></ToggleButton.Template></ToggleButton><ContentPresenter Margin="10,5,25,5" VerticalAlignment="Center" IsHitTestVisible="False" Content="{TemplateBinding SelectionBoxItem}" ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}" ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}" ContentStringFormat="{TemplateBinding SelectionBoxItemStringFormat}"/><Popup x:Name="PART_Popup" IsOpen="{TemplateBinding IsDropDownOpen}" Placement="Bottom" AllowsTransparency="True" Focusable="False" PopupAnimation="Fade"><Border Background="#202836" BorderBrush="#3A4D5B" BorderThickness="1" CornerRadius="5" MinWidth="{Binding ActualWidth,RelativeSource={RelativeSource TemplatedParent}}" MaxHeight="340"><ScrollViewer CanContentScroll="True"><StackPanel IsItemsHost="True"/></ScrollViewer></Border></Popup></Grid></ControlTemplate></Setter.Value></Setter></Style>
+  <Style TargetType="ComboBox">
+   <Setter Property="FontWeight" Value="Medium"/><Setter Property="Foreground" Value="{StaticResource InkBrush}"/><Setter Property="Background" Value="{StaticResource RaisedBrush}"/><Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/><Setter Property="Padding" Value="8,6"/><Setter Property="MinHeight" Value="32"/>
+   <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ComboBox">
+    <Grid>
+     <ToggleButton Style="{x:Null}" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" Focusable="False" IsChecked="{Binding IsDropDownOpen,RelativeSource={RelativeSource TemplatedParent},Mode=TwoWay}"><ToggleButton.Template><ControlTemplate TargetType="ToggleButton"><Border Background="#202836" BorderBrush="#344052" BorderThickness="1" CornerRadius="5"><TextBlock Text="⌄" HorizontalAlignment="Right" Margin="0,0,9,0" Foreground="#929FB3"/></Border></ControlTemplate></ToggleButton.Template></ToggleButton>
+     <ContentPresenter x:Name="SelectedContent" Margin="10,5,25,5" VerticalAlignment="Center" IsHitTestVisible="False" Content="{TemplateBinding SelectionBoxItem}" ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}" ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}" ContentStringFormat="{TemplateBinding SelectionBoxItemStringFormat}"/>
+     <TextBox x:Name="PART_EditableTextBox" Visibility="Collapsed" Margin="10,5,29,5" Padding="0" BorderThickness="0" Background="Transparent" Foreground="{TemplateBinding Foreground}" FontFamily="{TemplateBinding FontFamily}" FontSize="{TemplateBinding FontSize}" FontWeight="{TemplateBinding FontWeight}" VerticalContentAlignment="Center" IsReadOnly="{TemplateBinding IsReadOnly}" Focusable="True">
+      <TextBox.Template><ControlTemplate TargetType="TextBox"><ScrollViewer x:Name="PART_ContentHost" Focusable="False" HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Hidden"/></ControlTemplate></TextBox.Template>
+     </TextBox>
+     <Popup x:Name="PART_Popup" IsOpen="{TemplateBinding IsDropDownOpen}" Placement="Bottom" AllowsTransparency="True" Focusable="False" PopupAnimation="Fade"><Border Background="#202836" BorderBrush="#3A4D5B" BorderThickness="1" CornerRadius="5" MinWidth="{Binding ActualWidth,RelativeSource={RelativeSource TemplatedParent}}" MaxHeight="340"><ScrollViewer CanContentScroll="True"><StackPanel IsItemsHost="True"/></ScrollViewer></Border></Popup>
+    </Grid>
+    <ControlTemplate.Triggers>
+     <Trigger Property="IsEditable" Value="True"><Setter TargetName="SelectedContent" Property="Visibility" Value="Collapsed"/><Setter TargetName="PART_EditableTextBox" Property="Visibility" Value="Visible"/></Trigger>
+     <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.45"/></Trigger>
+    </ControlTemplate.Triggers>
+   </ControlTemplate></Setter.Value></Setter>
+  </Style>
   <Style TargetType="DataGrid"><Setter Property="FontWeight" Value="Medium"/><Setter Property="Background" Value="Transparent"/><Setter Property="Foreground" Value="{StaticResource InkBrush}"/><Setter Property="BorderThickness" Value="0"/><Setter Property="GridLinesVisibility" Value="None"/><Setter Property="RowBackground" Value="#151C27"/><Setter Property="AlternatingRowBackground" Value="#18212D"/><Setter Property="RowHeight" Value="42"/><Setter Property="HeadersVisibility" Value="Column"/><Setter Property="ColumnHeaderHeight" Value="36"/><Setter Property="AutoGenerateColumns" Value="False"/><Setter Property="CanUserAddRows" Value="False"/><Setter Property="CanUserDeleteRows" Value="False"/><Setter Property="EnableRowVirtualization" Value="True"/><Setter Property="EnableColumnVirtualization" Value="True"/><Setter Property="ScrollViewer.CanContentScroll" Value="True"/><Setter Property="VirtualizingPanel.VirtualizationMode" Value="Recycling"/><Setter Property="SelectionMode" Value="Single"/><Setter Property="SelectionUnit" Value="FullRow"/></Style>
   <Style TargetType="DataGridColumnHeader"><Setter Property="FontWeight" Value="SemiBold"/><Setter Property="Background" Value="#101722"/><Setter Property="Foreground" Value="{StaticResource MutedBrush}"/><Setter Property="BorderThickness" Value="0,0,0,1"/><Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/><Setter Property="Padding" Value="8,6"/><Setter Property="FontSize" Value="11"/><Setter Property="ClipToBounds" Value="True"/><Setter Property="VerticalContentAlignment" Value="Center"/></Style>
   <Style TargetType="DataGridCell"><Setter Property="FontWeight" Value="Medium"/><Setter Property="BorderThickness" Value="0"/><Setter Property="Padding" Value="8,2"/><Setter Property="ClipToBounds" Value="True"/><Setter Property="Template"><Setter.Value><ControlTemplate TargetType="DataGridCell"><Border Padding="{TemplateBinding Padding}" Background="{TemplateBinding Background}" ClipToBounds="True"><ContentPresenter VerticalAlignment="Center" HorizontalAlignment="Stretch"/></Border></ControlTemplate></Setter.Value></Setter><Style.Triggers><Trigger Property="IsSelected" Value="True"><Setter Property="Background" Value="#25443F"/><Setter Property="Foreground" Value="#ABF4DB"/></Trigger></Style.Triggers></Style>
   <Style TargetType="ToolTip"><Setter Property="FontWeight" Value="Medium"/><Setter Property="MaxWidth" Value="350"/><Setter Property="Background" Value="{StaticResource RaisedBrush}"/><Setter Property="Foreground" Value="{StaticResource InkBrush}"/><Setter Property="FontFamily" Value="{StaticResource AppFont}"/><Setter Property="TextOptions.TextFormattingMode" Value="Display"/><Setter Property="TextOptions.TextRenderingMode" Value="{DynamicResource AppTextRenderingMode}"/></Style>
-  <Style TargetType="ContextMenu"><Setter Property="FontWeight" Value="Medium"/><Setter Property="FontFamily" Value="{StaticResource AppFont}"/><Setter Property="TextOptions.TextFormattingMode" Value="Display"/><Setter Property="TextOptions.TextRenderingMode" Value="{DynamicResource AppTextRenderingMode}"/></Style>
-  <Style TargetType="MenuItem"><Setter Property="FontWeight" Value="Medium"/><Setter Property="FontFamily" Value="{StaticResource AppFont}"/><Setter Property="TextOptions.TextFormattingMode" Value="Display"/><Setter Property="TextOptions.TextRenderingMode" Value="{DynamicResource AppTextRenderingMode}"/></Style>
+  <!-- Popups live in separate windows: author both the root and submenu surfaces
+       so Windows/WPF-UI default menus cannot mix a light surface and dark text. -->
+  <Style TargetType="ContextMenu">
+   <Setter Property="KeyboardNavigation.DirectionalNavigation" Value="Cycle"/>
+   <Setter Property="FontWeight" Value="Medium"/><Setter Property="FontFamily" Value="{StaticResource AppFont}"/><Setter Property="FontSize" Value="13"/>
+   <Setter Property="Foreground" Value="{StaticResource InkBrush}"/><Setter Property="Background" Value="{StaticResource MenuSurfaceBrush}"/>
+   <Setter Property="BorderBrush" Value="{StaticResource MenuBorderBrush}"/><Setter Property="BorderThickness" Value="1"/><Setter Property="Padding" Value="4"/>
+   <Setter Property="MinWidth" Value="180"/><Setter Property="MaxHeight" Value="640"/><Setter Property="SnapsToDevicePixels" Value="True"/><Setter Property="UseLayoutRounding" Value="True"/>
+   <Setter Property="TextOptions.TextFormattingMode" Value="Display"/><Setter Property="TextOptions.TextRenderingMode" Value="{DynamicResource AppTextRenderingMode}"/>
+   <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ContextMenu">
+    <Border x:Name="MenuBorder" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="6" Padding="{TemplateBinding Padding}">
+     <ScrollViewer CanContentScroll="True" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Focusable="False">
+      <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Cycle" KeyboardNavigation.TabNavigation="Cycle" Grid.IsSharedSizeScope="True"/>
+     </ScrollViewer>
+    </Border>
+   </ControlTemplate></Setter.Value></Setter>
+  </Style>
+  <Style TargetType="MenuItem">
+   <Setter Property="FontWeight" Value="Medium"/><Setter Property="FontFamily" Value="{StaticResource AppFont}"/><Setter Property="FontSize" Value="13"/>
+   <Setter Property="Foreground" Value="{StaticResource InkBrush}"/><Setter Property="Background" Value="Transparent"/><Setter Property="Padding" Value="8,7"/>
+   <Setter Property="MinHeight" Value="32"/><Setter Property="HorizontalContentAlignment" Value="Stretch"/><Setter Property="VerticalContentAlignment" Value="Center"/>
+   <Setter Property="SnapsToDevicePixels" Value="True"/><Setter Property="UseLayoutRounding" Value="True"/>
+   <Setter Property="TextOptions.TextFormattingMode" Value="Display"/><Setter Property="TextOptions.TextRenderingMode" Value="{DynamicResource AppTextRenderingMode}"/>
+   <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="MenuItem">
+    <Grid>
+     <Border x:Name="MenuItemBorder" Background="{TemplateBinding Background}" CornerRadius="4" Padding="{TemplateBinding Padding}">
+      <Grid>
+       <Grid.ColumnDefinitions><ColumnDefinition Width="18"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="16"/></Grid.ColumnDefinitions>
+       <ContentPresenter x:Name="MenuIcon" ContentSource="Icon" Width="14" Height="14" VerticalAlignment="Center"/>
+       <Path x:Name="MenuCheck" Data="M 1,7 L 5,11 L 12,2" Stroke="{TemplateBinding Foreground}" StrokeThickness="1.6" Width="13" Height="13" VerticalAlignment="Center" Visibility="Collapsed"/>
+       <ContentPresenter Grid.Column="1" ContentSource="Header" RecognizesAccessKey="True" VerticalAlignment="Center" Margin="3,0,12,0" TextElement.Foreground="{TemplateBinding Foreground}"/>
+       <TextBlock Grid.Column="2" Text="{TemplateBinding InputGestureText}" Foreground="{TemplateBinding Foreground}" FontSize="11" VerticalAlignment="Center" Margin="0,0,8,0"/>
+       <Path x:Name="SubmenuArrow" Grid.Column="3" Data="M 2,1 L 6,5 L 2,9" Stroke="{TemplateBinding Foreground}" StrokeThickness="1.4" Width="8" Height="10" VerticalAlignment="Center" HorizontalAlignment="Right" Visibility="Collapsed"/>
+      </Grid>
+     </Border>
+     <Popup x:Name="PART_Popup" IsOpen="{Binding IsSubmenuOpen,RelativeSource={RelativeSource TemplatedParent},Mode=TwoWay}" Placement="Right" PlacementTarget="{Binding ElementName=MenuItemBorder}" HorizontalOffset="2" AllowsTransparency="True" Focusable="False" PopupAnimation="None">
+      <Border x:Name="SubmenuBorder" Background="{StaticResource MenuSurfaceBrush}" BorderBrush="{StaticResource MenuBorderBrush}" BorderThickness="1" CornerRadius="6" Padding="4" MinWidth="240" MaxHeight="640" TextElement.Foreground="{StaticResource InkBrush}" TextElement.FontFamily="{StaticResource AppFont}" TextElement.FontSize="13">
+       <ScrollViewer CanContentScroll="True" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Focusable="False">
+        <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Cycle" KeyboardNavigation.TabNavigation="Cycle" Grid.IsSharedSizeScope="True"/>
+       </ScrollViewer>
+      </Border>
+     </Popup>
+    </Grid>
+    <ControlTemplate.Triggers>
+     <Trigger Property="HasItems" Value="True"><Setter TargetName="SubmenuArrow" Property="Visibility" Value="Visible"/></Trigger>
+     <Trigger Property="IsChecked" Value="True"><Setter TargetName="MenuCheck" Property="Visibility" Value="Visible"/><Setter TargetName="MenuIcon" Property="Visibility" Value="Collapsed"/></Trigger>
+     <Trigger Property="IsHighlighted" Value="True"><Setter TargetName="MenuItemBorder" Property="Background" Value="{StaticResource MenuHoverBrush}"/><Setter Property="Foreground" Value="#FFFFFF"/></Trigger>
+     <Trigger Property="IsSubmenuOpen" Value="True"><Setter TargetName="MenuItemBorder" Property="Background" Value="{StaticResource MenuHoverBrush}"/><Setter Property="Foreground" Value="#FFFFFF"/></Trigger>
+     <Trigger Property="IsEnabled" Value="False"><Setter Property="Foreground" Value="{StaticResource MutedBrush}"/></Trigger>
+    </ControlTemplate.Triggers>
+   </ControlTemplate></Setter.Value></Setter>
+  </Style>
   <Style x:Key="NameCopyMenu" TargetType="ContextMenu" BasedOn="{StaticResource {x:Type ContextMenu}}">
    <Setter Property="Background" Value="{StaticResource PanelBrush}"/><Setter Property="Foreground" Value="{StaticResource InkBrush}"/>
    <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/><Setter Property="MinWidth" Value="280"/>

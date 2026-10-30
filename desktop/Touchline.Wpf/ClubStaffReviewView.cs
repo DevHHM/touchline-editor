@@ -71,6 +71,9 @@ public sealed class ClubStaffReviewView : UserControl
   Column(_candidates, "후보", nameof(StaffReviewCandidate.Name), 140, true); Column(_candidates, "점수 /300", nameof(StaffReviewCandidate.ScoreText), 78, sort: nameof(StaffReviewCandidate.Score)); Column(_candidates, "향상", nameof(StaffReviewCandidate.ImprovementText), 60, sort: nameof(StaffReviewCandidate.Improvement)); Column(_candidates, "명성", nameof(StaffReviewCandidate.ReputationText), 65, sort: nameof(StaffReviewCandidate.Reputation)); Column(_candidates, "상태 · 추정", nameof(StaffReviewCandidate.AvailabilityLabel), 160);
   _candidates.SelectionChanged += (_, _) => ShowCandidate(); _candidates.MouseDoubleClick += async (_, args) => { if (IsDataRow(args.OriginalSource)) await OpenAsync((_candidates.SelectedItem as StaffReviewCandidate)?.Person); };
   _openCandidate.Click += async (_, _) => await OpenAsync((_candidates.SelectedItem as StaffReviewCandidate)?.Person);
+  AbilitySafeGridSort.Attach(_staff);
+  Loaded += (_, _) => { if (_active) { AbilityVisibility.Current.Changed -= AbilityVisibilityChanged; AbilityVisibility.Current.Changed += AbilityVisibilityChanged; AbilityVisibilityChanged(null, EventArgs.Empty); } };
+  Unloaded += (_, _) => AbilityVisibility.Current.Changed -= AbilityVisibilityChanged;
   UpdateButtons();
  }
  private sealed record ScanLimit(int Value, string Label);
@@ -101,7 +104,7 @@ public sealed class ClubStaffReviewView : UserControl
   int generation = _generation, offset = 0; var roster = new List<EntityRecord>();
   while (_active && generation == _generation)
   {
-   var result = await _bridge.CallAsync("search", new { kind = "Staff", club_id = _club.Id, limit = 500, offset, sort = "ca", descending = true });
+   var result = await _bridge.CallAsync("search", new { kind = "Staff", club_id = _club.Id, limit = 500, offset, sort = AbilityVisibility.Current.HideCa ? "name" : "ca", descending = !AbilityVisibility.Current.HideCa });
    if (!_active || generation != _generation) return;
    var page = Decode<List<EntityRecord>>(result.GetProperty("items")); roster.AddRange(page); offset += page.Count;
    if (page.Count == 0 || offset >= result.GetProperty("total").GetInt32() || _cancelRequested) break;
@@ -194,6 +197,7 @@ public sealed class ClubStaffReviewView : UserControl
   var rows = _selectedSquad == SquadGroups.All ? _allRows : _allRows.Where(row => SquadGroups.Key(row.Group) == _selectedSquad).ToList();
   _selectedStaffBySquad.TryGetValue(_selectedSquad ?? SquadGroups.All, out var selected);
   _staff.ItemsSource = rows; _staff.SelectedItem = rows.FirstOrDefault(row => row.Person.Identity == selected) ?? rows.FirstOrDefault();
+  AbilitySafeGridSort.Refresh(_staff, nameof(StaffReviewRow.Name), path => path == "Person.Ca" && AbilityVisibility.Current.HideCa, AbilityVisibility.Current.HideCa);
   string label = SquadGroups.Options(_allRows.Select(row => row.Group)).FirstOrDefault(option => option.Key == _selectedSquad)?.Label ?? "전체";
   _count.Text = $"{label} 스태프 {rows.Count:N0}명 / 구단 전체 {_allRows.Count:N0}명" + (_partial ? $" · {_evaluatedCount:N0}명 평가 / 부분 결과" : "");
   ShowStaff(); UpdateButtons();
@@ -255,8 +259,40 @@ public sealed class ClubStaffReviewView : UserControl
   catch (Exception error) { App.Log(error); if (_active) { _status.Text = "평가 실패 · " + error.Message; _partial = true; } }
   finally { _busy = false; completion.TrySetResult(); UpdateButtons(); BusyChanged?.Invoke(false); }
  }
- public void Invalidate() { _active = false; ++_generation; _cancelRequested = true; UpdateButtons(); }
+ private void AbilityVisibilityChanged(object? sender, EventArgs args)
+ {
+  if (!Dispatcher.CheckAccess()) { Dispatcher.Invoke(() => AbilityVisibilityChanged(sender, args)); return; }
+  _staff.Items.Refresh();
+  foreach (var column in _staff.Columns.Where(column => column.SortMemberPath == "Person.Ca")) column.CanUserSort = !AbilityVisibility.Current.HideCa;
+  AbilitySafeGridSort.Refresh(_staff, nameof(StaffReviewRow.Name), path => path == "Person.Ca" && AbilityVisibility.Current.HideCa, AbilityVisibility.Current.HideCa);
+ }
+ public void Invalidate() { AbilityVisibility.Current.Changed -= AbilityVisibilityChanged; _active = false; ++_generation; _cancelRequested = true; UpdateButtons(); }
  public async Task StopAsync() { Invalidate(); var work = _inflight; if (work != null) await work.Task; }
+
+ public async Task<object> QaAbilityVisibilityAsync(string directory)
+ {
+  if (_live || !IsLoaded) throw new InvalidOperationException("능력치 표시 QA는 표시된 스냅샷 스태프 명단에서 실행합니다.");
+  if (!_loaded) await LoadAsync();
+  SelectSquad(SquadGroups.All);
+  var row = _staff.Items.OfType<StaffReviewRow>().FirstOrDefault(row => row.Person.Ca.HasValue) ?? throw new InvalidOperationException("CA QA 스태프가 없습니다.");
+  var column = _staff.Columns.OfType<DataGridTextColumn>().Single(column => (column.Binding as Binding)?.Path.Path == nameof(StaffReviewRow.CaText));
+  bool originalCa = AbilityVisibility.Current.HideCa, originalPa = AbilityVisibility.Current.HidePa;
+  var raw = (row.Person.Ca, row.Person.Pa); var reports = new List<object>(); Directory.CreateDirectory(directory);
+  try
+  {
+   foreach (var (hideCa, hidePa) in new[] { (true, false), (false, true), (true, true), (false, false) })
+   {
+    AbilityVisibility.Current.Set(hideCa, hidePa);
+    string actual = await WorkbenchWindow.ReadAbilityQaCellAsync(_staff, row, column);
+    if (actual != AbilityVisibility.Current.Format("ca", row.Person.Ca) || (column.GetCellContent(row) as TextBlock)?.ToolTip?.ToString() != actual) throw new InvalidOperationException("스태프 CA 셀/툴팁 숨김 불일치.");
+    if (hideCa && (column.CanUserSort || column.SortDirection.HasValue)) throw new InvalidOperationException("숨긴 스태프 CA 정렬이 남았습니다.");
+    if (raw != (row.Person.Ca, row.Person.Pa)) throw new InvalidOperationException("숨김 변경이 스태프 원본을 변경했습니다.");
+    await CaptureAsync(Path.Combine(directory, $"staff-ability-{hideCa}-{hidePa}.png")); reports.Add(new { hideCa, hidePa, renderedCellAndTooltipMasked = true, rawUnchanged = true });
+   }
+   return new { success = true, gameWrites = false, reports };
+  }
+  finally { AbilityVisibility.Current.Set(originalCa, originalPa); }
+ }
 
  public async Task<object> QaAsync(string outputDir)
  {

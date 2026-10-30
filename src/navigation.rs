@@ -152,6 +152,7 @@ mod tests {
     }
     fn snapshot() -> Index {
         Index {
+            club_leagues: Vec::new(),
             session: Session {
                 pid: 0,
                 created: 0,

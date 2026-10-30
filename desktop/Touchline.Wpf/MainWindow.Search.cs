@@ -16,6 +16,7 @@ public partial class MainWindow
   await StopDetailViewsAsync();
   ++_searchVersion;
   ClearDetail();
+  LeagueScreen.Visibility=Visibility.Collapsed; _returnToLeague=false;
   if(_searchView==null)
   {
    _searchView=new SearchView(_bridge,_live,_ownClub,async entity=>
@@ -34,17 +35,22 @@ public partial class MainWindow
  }
  private void ShowProfile()
  {
+  if(LeagueScreen.IsVisible)_returnToLeague=true;
+  LeagueScreen.Visibility=Visibility.Collapsed;
   SearchScreen.Visibility=Visibility.Collapsed;
   ContentColumns.Visibility=Visibility.Visible;
-  SearchScreenButton.Content="검색 결과로";
+  SearchScreenButton.Content=_returnToLeague?"리그 목록으로":"검색 결과로";
+  SetNavigation();
  }
  private async void SearchScreen_Click(object sender,RoutedEventArgs e)
  {
   if(_busy||!CanLeave())return;
+  if(_returnToLeague||LeagueScreen.IsVisible){await Guard(()=>ShowLeagueBrowserAsync(),true,"리그 목록 불러오는 중…");return;}
   await Guard(()=>ShowSearchAsync(_lastSearchKind??_kind),true,"검색 필터 불러오는 중…");
  }
  private async Task DisposeSearchView()
  {
+  DisposeLeagueBrowser();
   if(_searchView!=null)await _searchView.StopAsync();
   _searchView=null;_lastSearchKind=null;SearchScreen.Children.Clear();SearchScreen.Visibility=Visibility.Collapsed;
   ContentColumns.Visibility=Visibility.Visible;
@@ -74,6 +80,32 @@ public partial class MainWindow
   File.WriteAllText(Path.Combine(directory,"search-columns-ui.json"),JsonSerializer.Serialize(result,new JsonSerializerOptions{WriteIndented=true}));
   Capture(Path.Combine(directory,"main-search-columns.png"));
   _qaChecks.Add("search_columns_nationality_picker_persistence");
+ }
+ private async Task RunDetailedSearchQaAsync(string directory)
+ {
+  await ShowSearchAsync("Player");
+  var result=await _searchView!.QaDetailedSearchAsync(directory);
+  File.WriteAllText(Path.Combine(directory,"detailed-search-ui.json"),JsonSerializer.Serialize(result,new JsonSerializerOptions{WriteIndented=true}));
+  _qaChecks.Add("typed_detailed_conditions_and_or_position_catalog");
+  OpenUpdateSettings();
+  try {
+   await Task.Delay(180);_updateWindow!.UpdateLayout();CaptureWindow(_updateWindow,Path.Combine(directory,"update-settings.png"));
+   _updateWindow.Width=520;_updateWindow.Height=300;await Task.Delay(120);_updateWindow.UpdateLayout();CaptureWindow(_updateWindow,Path.Combine(directory,"update-settings-520x300.png"));
+   if(_updateWindow.Content is not System.Windows.Controls.ScrollViewer updateScroll||updateScroll.ScrollableHeight<=0)throw new InvalidOperationException("작은 업데이트 창의 세로 스크롤 검증 실패");
+   _qaChecks.Add("update_settings_native_scroll_layout");
+  }finally{_updateWindow?.Close();}
+ }
+ private async Task RunNationalitySearchQaAsync(string directory)
+ {
+  await ShowSearchAsync("Player");
+  var result=await _searchView!.QaNationalityAsync(directory);
+  File.WriteAllText(Path.Combine(directory,"nationality-search-ui.json"),JsonSerializer.Serialize(result,new JsonSerializerOptions{WriteIndented=true}));
+  var workbench=new WorkbenchWindow(_bridge!,false,null,_ownClub,_=>{}) {Owner=this};workbench.Show();
+  try {
+   var workbenchResult=await workbench.QaNationalityAsync(directory);
+   File.WriteAllText(Path.Combine(directory,"nationality-workbench-ui.json"),JsonSerializer.Serialize(workbenchResult,new JsonSerializerOptions{WriteIndented=true}));
+  } finally {await workbench.CloseAsync();}
+  _qaChecks.Add("primary_nationality_search_filters");
  }
  private async Task RunPositionSortQaAsync(string directory)
  {

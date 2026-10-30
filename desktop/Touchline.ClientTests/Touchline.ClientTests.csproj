@@ -8,9 +8,17 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../Touchline.Wpf/BridgeClient.cs" Link="BridgeClient.cs" />
+    <Compile Include="../Touchline.Wpf/DiagnosticsLog.cs" Link="DiagnosticsLog.cs" />
+    <Compile Include="../Touchline.Wpf/DiagnosticSharing.cs" Link="DiagnosticSharing.cs" />
+    <Compile Include="../Touchline.Wpf/PositionSearch.cs" Link="PositionSearch.cs" />
+    <Compile Include="../Touchline.Wpf/BridgeSession.cs" Link="BridgeSession.cs" />
+    <Compile Include="../Touchline.Wpf/ConnectionPresentation.cs" Link="ConnectionPresentation.cs" />
     <Compile Include="../Touchline.Wpf/Models.cs" Link="Models.cs" />
+    <Compile Include="../Touchline.Wpf/AbilityVisibility.cs" Link="AbilityVisibility.cs" />
     <Compile Include="../Touchline.Wpf/PositionOrder.cs" Link="PositionOrder.cs" />
     <Compile Include="../Touchline.Wpf/SearchCriteria.cs" Link="SearchCriteria.cs" />
+    <Compile Include="../Touchline.Wpf/SearchConditions.cs" Link="SearchConditions.cs" />
+    <Compile Include="../Touchline.Wpf/LeagueBrowserModels.cs" Link="LeagueBrowserModels.cs" />
     <Compile Include="../Touchline.Wpf/SearchColumns.cs" Link="SearchColumns.cs" />
     <Compile Include="../Touchline.Wpf/LiveReloadState.cs" Link="LiveReloadState.cs" />
     <Compile Include="../Touchline.Wpf/GameEditionPresentation.cs" Link="GameEditionPresentation.cs" />

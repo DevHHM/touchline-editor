@@ -28,6 +28,7 @@ impl Bridge {
         let can_reconnect = self.connection.enabled && !self.live
             && self.connection.candidate.as_ref().is_some_and(|(_, since)| now.duration_since(*since) >= STABLE_FOR)
             && self.connection.last_attempt.is_none_or(|last| now.duration_since(last) >= RECONNECT_BACKOFF);
+        crate::runtime_log::connection(if can_reconnect {"ready"}else{self.connection.state},&self.connection.reason);
         json!({"state":if can_reconnect {"ready"} else {self.connection.state},
             "monitoring":self.connection.enabled,"changed":changed,"date_changed":date_changed,
             "can_reconnect":can_reconnect,"generation":self.connection_generation,
@@ -62,16 +63,27 @@ impl Bridge {
         }
         match observation {
             Observation::Ready(ready) => {
+                let preserve_error = self.connection.state == "error"
+                    && self.connection.candidate.as_ref().is_some_and(|(old, _)| old.identity == ready.identity);
                 self.connection.preferred_pid = Some(ready.identity.pid);
                 if !self.connection.candidate.as_ref().is_some_and(|(old, _)| old == &ready) {
                     self.connection.candidate = Some((ready, now));
                 }
-                self.connection.state = "loading";
-                self.connection.reason = "새 세이브 데이터가 안정되면 자동으로 다시 불러옵니다".into();
+                // A successful small probe does not erase a failed full index
+                // read. Keep its diagnostic visible throughout retry backoff.
+                if !preserve_error {
+                    self.connection.state = "loading";
+                    self.connection.reason = "새 세이브 데이터가 안정되면 자동으로 다시 불러옵니다".into();
+                }
             }
             Observation::Waiting(reason) => {
                 self.connection.candidate = None;
                 self.connection.state = "loading";
+                self.connection.reason = reason;
+            }
+            Observation::Error(reason) => {
+                self.connection.candidate = None;
+                self.connection.state = "error";
                 self.connection.reason = reason;
             }
             Observation::UnsupportedBuild(reason) => {
@@ -112,32 +124,37 @@ impl Bridge {
         self.connection.candidate = None;
         self.connection.state = "connected";
         self.connection.reason.clear();
+        self.connection.last_attempt = None;
         Ok(())
     }
+    fn initial_observation(&mut self, observation: Observation, now: Instant) -> Result<Ready> {
+        if let Observation::Ready(ready) = observation { return Ok(ready); }
+        self.connection_observe(observation, now);
+        // Permission errors, unknown builds and an unloaded save need different
+        // actions. Return the actual probe reason, including its source chain.
+        bail!("{}", self.connection.reason);
+    }
+    fn rebuild_observed_with(
+        &mut self, before: &Ready, now: Instant,
+        load: impl FnOnce(u32) -> Result<Index>,
+        observe: impl FnOnce(u32) -> Observation,
+    ) -> Result<Value> {
+        crate::runtime_log::event("info","connection","attempt","Reading the observed FM process");
+        self.connection.last_attempt = Some(now);
+        let pid = before.identity.pid;
+        let outcome = load(pid);
+        self.complete_connection(before, outcome, observe(pid))
+    }
     pub(super) fn connection_connect(&mut self) -> Result<Value> {
+        crate::runtime_log::event("info","connection","requested","FM connection requested");
         self.replace_connection();
         self.connection = Monitor { enabled: true, ..Monitor::default() };
-        let before = match watch::probe(None) {
-            Observation::Ready(ready) => ready,
-            Observation::UnsupportedBuild(reason) => {
-                self.connection_observe(Observation::UnsupportedBuild(reason.clone()), Instant::now());
-                bail!("{reason}");
-            }
-            other => {
-                self.connection_observe(other, Instant::now());
-                bail!("FM 데이터가 아직 준비되지 않았습니다. 자동으로 로드 완료를 기다립니다");
-            }
-        };
+        let before = self.initial_observation(watch::probe(None), Instant::now())?;
         self.connection.preferred_pid = Some(before.identity.pid);
-        let index = backend::connect(|s|eprintln!("{s}"))?;
-        let after = match watch::probe(Some(before.identity.pid)) {
-            Observation::Ready(ready) if ready.identity == before.identity && ready.game_date >= before.game_date => ready,
-            other => {
-                self.connection_observe(other, Instant::now());
-                bail!("연결 중 세이브가 변경됐습니다. 안정된 상태에서 자동으로 다시 불러옵니다");
-            }
-        };
-        self.attach_observed(index, after)?;
+        self.rebuild_observed_with(&before, Instant::now(),
+            |pid| backend::connect_pid(pid, &|s|eprintln!("{s}")),
+            |pid| watch::probe(Some(pid)))?;
+        ensure!(self.live, "{}", self.connection.reason);
         Ok(self.summary())
     }
     pub(super) fn connection_reconnect(&mut self) -> Result<Value> {
@@ -145,10 +162,9 @@ impl Bridge {
         let observed = self.connection_poll();
         if !observed["can_reconnect"].as_bool().unwrap_or(false) { return Ok(observed); }
         let before = self.connection.candidate.as_ref().unwrap().0.clone();
-        self.connection.last_attempt = Some(Instant::now());
-        let outcome = backend::connect(|s|eprintln!("{s}"));
-        let after = watch::probe(Some(before.identity.pid));
-        self.complete_connection(&before, outcome, after)
+        self.rebuild_observed_with(&before, Instant::now(),
+            |pid| backend::connect_pid(pid, &|s|eprintln!("{s}")),
+            |pid| watch::probe(Some(pid)))
     }
     fn complete_connection(&mut self, before: &Ready, outcome: Result<Index>, after: Observation) -> Result<Value> {
         match (outcome, after) {
@@ -159,16 +175,16 @@ impl Bridge {
                 Ok(result)
             }
             (Err(error), Observation::Ready(ready)) if ready.identity == before.identity => {
+                crate::runtime_log::error("connection","index_failed","FM index read failed",&error);
                 self.connection.state = "error";
                 self.connection.reason = format!("FM 데이터 조회 실패: {error:#}");
-                self.connection.candidate = None;
+                self.connection.candidate = Some((ready, Instant::now()));
                 Err(error)
             }
             (_, observation) => {
-                let mut result = self.connection_observe(observation, Instant::now());
-                self.connection.reason = "세이브를 읽는 동안 데이터가 변경됐습니다. 잠시 후 다시 시도합니다".into();
-                result["reason"] = json!(self.connection.reason);
-                Ok(result)
+                // The post-scan probe can expose an access error or unsupported
+                // build; do not replace that reason with a generic load message.
+                Ok(self.connection_observe(observation, Instant::now()))
             }
         }
     }
@@ -335,6 +351,55 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(bridge.connection.state, "error");
         assert!(bridge.connection.reason.contains("registry validation failed"));
+        assert!(!bridge.live && bridge.index.is_none());
+    }
+    #[test]
+    fn first_connection_retains_actual_wait_and_failure_messages() {
+        for (observation, state, reason) in [
+            (Observation::Waiting("세이브 인물 목록이 비어 있습니다".into()), "loading", "세이브 인물 목록이 비어 있습니다"),
+            (Observation::Error("FM 프로세스 접근 실패: os error 5".into()), "error", "FM 프로세스 접근 실패: os error 5"),
+            (Observation::UnsupportedBuild("지원하지 않는 빌드 ABCD".into()), "unsupported_build", "지원하지 않는 빌드 ABCD"),
+            (Observation::Absent, "waiting", "FM 실행과 세이브 로드를 기다립니다"),
+        ] {
+            let mut bridge = Bridge::default();
+            bridge.connection.enabled = true;
+            let error = bridge.initial_observation(observation, Instant::now()).unwrap_err();
+            assert_eq!(error.to_string(), reason);
+            assert_eq!(bridge.connection.state, state);
+            assert!(!bridge.live && bridge.connection.candidate.is_none());
+        }
+    }
+    #[test]
+    fn rebuild_reads_only_the_observed_pid_and_retains_failure_during_backoff() {
+        let (mut bridge, ready) = fixture();
+        activate(&mut bridge, &ready);
+        bridge.replace_connection();
+        let start = Instant::now();
+        let outcome = bridge.rebuild_observed_with(&ready, start,
+            |pid| { assert_eq!(pid, ready.identity.pid); Err(anyhow::anyhow!("city validation failed").context("index read")) },
+            |pid| { assert_eq!(pid, ready.identity.pid); Observation::Ready(ready.clone()) });
+        assert!(outcome.is_err());
+        let status = bridge.connection_observe(Observation::Ready(ready.clone()), start + Duration::from_secs(2));
+        assert_eq!(status["state"], "error");
+        assert_eq!(status["can_reconnect"], false);
+        assert!(status["reason"].as_str().unwrap().contains("index read: city validation failed"));
+        let status = bridge.connection_observe(Observation::Ready(ready.clone()), start + Duration::from_secs(9));
+        assert_eq!(status["state"], "ready");
+        assert_eq!(status["can_reconnect"], true);
+        let mut different = ready.clone(); different.identity.db += 8;
+        let status = bridge.connection_observe(Observation::Ready(different), start + Duration::from_secs(10));
+        assert_eq!(status["state"], "loading");
+        assert!(!status["reason"].as_str().unwrap().contains("city validation failed"));
+    }
+    #[test]
+    fn post_scan_error_is_not_reported_as_a_changing_save() {
+        let (mut bridge, ready) = fixture();
+        let index = bridge.index.clone().unwrap();
+        activate(&mut bridge, &ready);
+        bridge.replace_connection();
+        let result = bridge.complete_connection(&ready, Ok(index), Observation::Error("access denied after scan".into())).unwrap();
+        assert_eq!(result["state"], "error");
+        assert_eq!(result["reason"], "access denied after scan");
         assert!(!bridge.live && bridge.index.is_none());
     }
 }

@@ -38,7 +38,7 @@ public sealed class EntityRecord : INotifyPropertyChanged
         "Player" => "선수", "Staff" => "스태프", "Club" => "구단",
         "Person" => "기타 인물", "City" => "도시", _ => Kind
     };
-    [JsonIgnore] public string AbilityText => Ca.HasValue || Pa.HasValue ? $"{Ca?.ToString() ?? "—"} / {Pa?.ToString() ?? "—"}" : "—";
+    [JsonIgnore] public string AbilityText => Ca.HasValue || Pa.HasValue ? $"{AbilityVisibility.Current.Format("ca", Ca)} / {AbilityVisibility.Current.Format("pa", Pa)}" : "—";
     [JsonIgnore] public string AgeText => Age.HasValue ? $"{Age}세" : "—";
     [JsonIgnore] public string FootballCategoryLabel => FootballCategory switch { "men" => "남자축구", "women" => "여자축구", _ => "미확인" };
     [JsonIgnore] public int PositionRank => PositionOrder.Rank(Role);

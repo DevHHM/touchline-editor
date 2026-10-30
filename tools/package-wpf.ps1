@@ -6,6 +6,7 @@ $root = [IO.Path]::GetFullPath($PackageDirectory).TrimEnd('\', '/')
 $prefix = $root + [IO.Path]::DirectorySeparatorChar
 $report = Get-Content -LiteralPath (Join-Path $root 'package-report.json') -Raw | ConvertFrom-Json
 if ($report.layout -ne 'app-engine-v1') { throw 'Unexpected package layout.' }
+if ([version]$report.version -ge [version]'0.13.0' -and -not (Test-Path -LiteralPath (Join-Path $root 'app\Touchline Updater.exe') -PathType Leaf)) { throw 'Updater helper missing from the release package.' }
 $version = [string]$report.version
 $zipPath = Join-Path (Split-Path -Parent $root) "Touchline-Editor-$version-win-x64.zip"
 if (-not $SkipZip -and ((Test-Path -LiteralPath $zipPath) -or (Test-Path -LiteralPath "$zipPath.sha256"))) { throw 'Release ZIP/hash already exists; existing releases are never overwritten.' }

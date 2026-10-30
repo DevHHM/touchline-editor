@@ -3,6 +3,8 @@ use crate::model::*;
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, path::Path};
+mod search_conditions;
+pub use search_conditions::SearchCondition;
 
 #[derive(Clone, Debug, Deserialize, Serialize, Default)]
 #[serde(default, deny_unknown_fields)]
@@ -16,10 +18,14 @@ pub struct Filter {
     pub role: String,
     pub club_query: String,
     pub group: Option<String>,
+    /// Exact primary nationality, never the employing club's nation or a secondary nationality.
+    pub nationality_id: Option<u32>,
     pub football_category: Option<FootballCategory>,
     pub employed: bool,
     pub unemployed: bool,
     pub fields: Vec<Range>,
+    /// Ordered expression: AND binds within groups separated by OR.
+    pub conditions: Vec<SearchCondition>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -31,6 +37,12 @@ pub struct Range {
 impl Filter {
     pub fn validate(&self) -> Result<()> {
         ensure!(self.fields.len() <= 64, "능력치 조건은 최대 64개입니다");
+        ensure!(self.conditions.len() <= 64, "상세 검색 조건은 최대 64개입니다");
+        for condition in &self.conditions { condition.validate()?; }
+        ensure!(
+            self.nationality_id.is_none_or(|id| id > 0),
+            "주 국적 ID는 양수여야 합니다"
+        );
         ensure!(
             !self.employed || !self.unemployed,
             "소속 있음과 무소속을 동시에 선택할 수 없습니다"
@@ -85,6 +97,10 @@ impl Filter {
             v.is_some_and(|v| lo.is_none_or(|x| v >= x) && hi.is_none_or(|x| v <= x))
         }
         within(e.age, self.age_min, self.age_max)
+            && self.nationality_id.is_none_or(|id| {
+                matches!(e.kind, EntityKind::Player | EntityKind::Staff | EntityKind::Person)
+                    && e.nationality_id == Some(id)
+            })
             && self
                 .football_category
                 .is_none_or(|category| e.football_category == category)
@@ -97,6 +113,7 @@ impl Filter {
             && self.group.as_ref().is_none_or(|group| {
                 normalize(group).is_empty() || normalize(&e.group) == normalize(group)
             })
+            && search_conditions::evaluate(&self.conditions, e, None).is_none_or(|value| value)
     }
     pub fn matches_detail(&self, d: &Detail) -> bool {
         self.fields.iter().all(|r| {
@@ -105,10 +122,13 @@ impl Filter {
                     && r.min.is_none_or(|v| f.value >= v)
                     && r.max.is_none_or(|v| f.value <= v)
             })
-        })
+        }) && search_conditions::evaluate(&self.conditions, &d.entity, Some(d)) == Some(true)
     }
     pub fn validate_catalog(&self, catalog: &[Field]) -> Result<()> {
         self.validate()?;
+        for condition in self.conditions.iter().filter(|c| c.enabled) {
+            condition.validate_catalog(catalog)?;
+        }
         for range in &self.fields {
             let field = catalog
                 .iter()
@@ -125,6 +145,13 @@ impl Filter {
             }
         }
         Ok(())
+    }
+    pub fn condition_field_keys(&self) -> impl Iterator<Item = &str> {
+        self.conditions.iter().flat_map(|c| c.field_keys())
+    }
+    pub fn proven_without_detail(&self, entity: &Entity) -> bool {
+        self.fields.is_empty() && self.matches(entity)
+            && search_conditions::evaluate(&self.conditions, entity, None) == Some(true)
     }
 }
 
@@ -583,6 +610,42 @@ mod tests {
         }
     }
     #[test]
+    fn position_selection_uses_any_numeric_proficiency_as_one_expression_operand() {
+        let mut d=detail();
+        d.entity.role="GK".into(); // Display text must not decide a proficiency match.
+        for (key,value) in [("position_dl",20.),("position_dr",1.)] {
+            let mut field=d.fields[0].clone();field.key=key.into();field.value=value;field.min=0.;field.max=20.;d.fields.push(field);
+        }
+        let filter:Filter=serde_json::from_value(serde_json::json!({"conditions":[
+            {"source":"position","key":"any","op":"gte","value":20,"positions":["position_dl","position_dr"]},
+            {"source":"entity","key":"ca","op":"gte","value":100}
+        ]})).unwrap();
+        filter.validate_catalog(&d.fields).unwrap();
+        assert!(filter.matches(&d.entity) && !filter.proven_without_detail(&d.entity));
+        assert!(filter.matches_detail(&d));
+        assert_eq!(filter.condition_field_keys().collect::<Vec<_>>(),vec!["position_dl","position_dr"]);
+        d.entity.ca=Some(99);assert!(!filter.matches_detail(&d)); // No OR leaks around CA.
+        d.entity.ca=Some(100);d.fields.iter_mut().find(|f|f.key=="position_dl").unwrap().value=19.;
+        assert!(!filter.matches_detail(&d));
+        d.fields.iter_mut().find(|f|f.key=="position_dr").unwrap().value=20.;assert!(filter.matches_detail(&d));
+        d.fields.retain(|f|!f.key.starts_with("position_"));assert!(!filter.matches_detail(&d));
+        assert!(filter.validate_catalog(&d.fields).is_err());
+        d.entity.kind=EntityKind::Staff;assert!(!filter.matches(&d.entity));
+        let restored:Filter=serde_json::from_value(serde_json::to_value(&filter).unwrap()).unwrap();
+        assert_eq!(restored.condition_field_keys().collect::<Vec<_>>(),filter.condition_field_keys().collect::<Vec<_>>());
+        let legacy:Filter=serde_json::from_value(serde_json::json!({"conditions":[{"source":"field","key":"ca","op":"gte","value":100}]})).unwrap();
+        assert!(legacy.validate().is_ok());
+        assert!(serde_json::to_value(legacy).unwrap()["conditions"][0].get("positions").is_none());
+    }
+    #[test]
+    fn position_selection_rejects_unverified_keys_and_invalid_thresholds() {
+        let valid=serde_json::json!({"source":"position","key":"any","op":"gte","value":20,"positions":["position_dc"]});
+        for (name,value) in [("value",serde_json::json!(0)),("value",serde_json::json!(21)),("value",serde_json::json!(19.5)),("op",serde_json::json!("ne")),("positions",serde_json::json!([])),("positions",serde_json::json!(["position_dc","position_dc"])),("positions",serde_json::json!(["role"])),("positions",serde_json::json!(["position_unknown"]))] {
+            let mut row=valid.clone();row[name]=value;
+            let condition:SearchCondition=serde_json::from_value(row).unwrap();assert!(condition.validate().is_err(),"{name}");
+        }
+    }
+    #[test]
     fn current_value_rules_remain_valid_desired_state() {
         let d = detail();
         for (operation, value) in [
@@ -645,6 +708,47 @@ mod tests {
         assert!(
             serde_json::from_value::<Filter>(serde_json::json!({"football_category":1})).is_err()
         );
+    }
+    #[test]
+    fn nationality_filter_is_exact_primary_id_and_preserves_legacy_filters() {
+        let mut e = detail().entity;
+        e.nationality = "대한민국".into();
+        e.nationality_id = Some(776);
+        e.club = "대한민국".into();
+        e.club_id = Some(776);
+        let selected: Filter = serde_json::from_value(serde_json::json!({"nationality_id":776})).unwrap();
+        assert!(selected.validate().is_ok());
+        for kind in [EntityKind::Player, EntityKind::Staff, EntityKind::Person] {
+            e.kind = kind;
+            assert!(selected.matches(&e));
+            // A translated or absent label does not change a known identity.
+            e.nationality = String::new();
+            assert!(selected.matches(&e));
+            e.nationality = "대한민국".into();
+            e.nationality_id = Some(777);
+            assert!(!selected.matches(&e));
+            e.nationality_id = None;
+            assert!(!selected.matches(&e));
+            for value in [serde_json::json!({}), serde_json::json!({"nationality_id":null})] {
+                let legacy: Filter = serde_json::from_value(value).unwrap();
+                assert!(legacy.matches(&e));
+            }
+            e.nationality_id = Some(776);
+        }
+        for kind in [EntityKind::Club, EntityKind::City] {
+            e.kind = kind;
+            assert!(!selected.matches(&e));
+        }
+        let restored: Filter = serde_json::from_value(serde_json::to_value(&selected).unwrap()).unwrap();
+        assert_eq!(restored.nationality_id, Some(776));
+    }
+    #[test]
+    fn nationality_filter_rejects_invalid_id_values() {
+        let zero: Filter = serde_json::from_value(serde_json::json!({"nationality_id":0})).unwrap();
+        assert!(zero.validate().is_err());
+        for invalid in [serde_json::json!(-1), serde_json::json!(1.5), serde_json::json!("776"), serde_json::json!(4294967296u64)] {
+            assert!(serde_json::from_value::<Filter>(serde_json::json!({"nationality_id":invalid})).is_err());
+        }
     }
     #[test]
     fn no_op_mode_still_validates_readonly_steps_and_final_ability_pair() {

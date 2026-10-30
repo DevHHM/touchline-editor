@@ -11,6 +11,10 @@ pub(crate) struct ApiSession {
 impl ApiSession {
     pub(crate) fn handle(&mut self, value: Value) -> Value {
         let id = value.get("id").and_then(Value::as_u64).map_or(Value::Null, |id| json!(id));
+        // Only a name from our static catalogue may enter diagnostics. Unknown
+        // command names and malformed envelopes can contain arbitrary payloads.
+        let log_command=value.get("command").and_then(Value::as_str)
+            .and_then(|name|COMMANDS.iter().find(|command|command.name==name)).map(|command|command.name);
         let request = serde_json::from_value::<Request>(value);
         let response = request.map_err(anyhow::Error::from).and_then(|mut request| {
             if request.args.is_null() { request.args = json!({}); }
@@ -30,7 +34,14 @@ impl ApiSession {
         });
         match response {
             Ok(data) => json!({"id":id,"ok":true,"data":data}),
-            Err(error) => json!({"id":id,"ok":false,"error":format!("{error:#}")}),
+            Err(error) => {
+                if let Some(command)=log_command {
+                    crate::runtime_log::error("command",command,"Command failed",&error);
+                } else {
+                    crate::runtime_log::event("error","command","invalid_request","Malformed or unknown command rejected");
+                }
+                json!({"id":id,"ok":false,"error":format!("{error:#}")})
+            },
         }
     }
 }
@@ -63,7 +74,8 @@ const COMMANDS: &[Command] = &[
     command!("overlay_detail", "read", "Fresh staff detail without replacing the editor's retained baseline.", "id", ""),
     command!("club_growth", "read", "Read club squad growth reference values and their limitations.", "club_id", ""),
     command!("field_catalog", "read", "Discover one matching entity's fields plus bounded verified column_fields metadata for the column chooser; column metadata has no player values or editability.", "kind", "id"),
-    command!("search_facets", "read", "Discover actual roles, squad groups and football categories.", "kind", ""),
+    command!("search_facets", "read", "Discover actual roles, squad groups, football categories and primary nationality choices (nations: id/name/count; people only).", "kind", ""),
+    command!("league_catalog", "read", "Browse indexed clubs by verified first-team league, league nation and football category. Includes every club once; missing/legacy links remain in an explicit unclassified group. Club references open existing Club detail. refresh=true re-reads verified live links without game writes.", "", "refresh"),
     command!("query_start", "session", "Start incremental advanced search; request fields and field ranges using catalogue keys.", "kind", "filter,club_id,query,fields,sort,sort_field,descending"),
     command!("query_step", "read", "Read the next bounded page. Continue until complete=true; inspect failed/errors.", "query_id", ""),
     command!("query_cancel", "session", "Discard an advanced-search cursor (latest cursor if omitted).", "", "query_id"),
@@ -131,7 +143,8 @@ pub(crate) fn capabilities() -> Value {
             "Edit":{"key":"editable key returned by detail","value":"finite number within field min/max"},
             "Rule":{"key":"editable key returned by detail","operation":"set|add|percent|at_least|at_most","value":"finite number"},
             "FieldRange":{"key":"field_catalog key","min":"number|null","max":"number|null"},
-            "Filter":{"age_min":"u32|null","age_max":"u32|null","ca_min":"u16|null","ca_max":"u16|null","pa_min":"u16|null","pa_max":"u16|null","role":"string","club_query":"string","group":"string|null","football_category":"men|women|unknown|null","employed":"bool","unemployed":"bool","fields":"FieldRange[]; query_start only"},
+            "Filter":{"age_min":"u32|null","age_max":"u32|null","ca_min":"u16|null","ca_max":"u16|null","pa_min":"u16|null","pa_max":"u16|null","role":"string","club_query":"string","group":"string|null","nationality_id":"positive u32|null; exact primary nation ID from search_facets.nations; people only","football_category":"men|women|unknown|null","employed":"bool","unemployed":"bool","fields":"FieldRange[]; query_start only","conditions":"SearchCondition[0..64]; base filters AND ordered expression; AND before OR; missing values do not match any comparison"},
+            "SearchCondition":{"enabled":"bool; default true","join":"and|or; first enabled join ignored","source":"entity|field|position","key":"entity: id/name/club/role/group/age/ca/pa/nationality_id/football_category/employed; field: verified field_catalog key; position: any (Player only)","op":"number: eq/ne/gte/lte/gt/lt/between; text: eq/ne/contains/not_contains; bool: eq/ne; position: gte only","value":"number|string|bool according to field; position: integer proficiency 1..20","value2":"number for between only; otherwise omitted or null","positions":"position source only: 1..14 unique verified position_* field keys; any >= value within this single condition; omitted for entity/field"},
             "RelationOperation":{"discriminator":"action","variants":["add_career_target","set_career_target","set_social_relation","add_social_relation","delete_social_relation","set_career_details","add_career_club","delete_career_plan","delete_favourite_club","delete_secondary_nationality","set_career_club","set_favourite_club","add_favourite_club","set_secondary_nationality","add_secondary_nationality","reuse_name"],"availability":"Read relation_detail first. Unknown/read-only types are not made editable by this API."}
         },
         "workflows":{

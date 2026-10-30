@@ -41,7 +41,8 @@ public partial class MainWindow
   switch (shortcut)
   {
    case EditorShortcut.Search:
-    if (SearchScreen.IsVisible) _searchView?.FocusSearch();
+    if (LeagueScreen.IsVisible) _leagueBrowser?.FocusSearch();
+    else if (SearchScreen.IsVisible) _searchView?.FocusSearch();
     else { SearchBox.Focus(); SearchBox.SelectAll(); }
     break;
    case EditorShortcut.SearchFilters: SearchScreen_Click(this, new()); break;
@@ -53,7 +54,7 @@ public partial class MainWindow
   }
  }
 
- private void ShortcutHelp_Click(object sender, RoutedEventArgs e) => AppDialog.Show(this, EditorShortcuts.HelpText, "Touchline 단축키", MessageBoxButton.OK, MessageBoxImage.Information);
+ private void ShortcutHelp_Click(object sender, RoutedEventArgs e) => new DiagnosticsWindow { Owner=this }.ShowDialog();
  private void ClearSearch_Click(object sender, RoutedEventArgs e)
  {
   if (_busy) return;

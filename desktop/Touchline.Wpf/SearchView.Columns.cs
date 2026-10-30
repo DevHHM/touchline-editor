@@ -39,8 +39,8 @@ public sealed partial class SearchView
    "medical" => ["staff_physiotherapy", "staff_sports_science"],
    "scores" => _columnCatalog.Where(f => f.Key.StartsWith("score_")).Select(f => f.Key),
    "contract" => _columnCatalog.Where(f => f.Key.StartsWith("contract.") || f.Key is "player.market_value" or "player.asking_price").Select(f => f.Key),
-   "selected" => _criteria.Conditions.Select(c => c.Key),
-   _ => _criteria.Conditions.Select(c => c.Key).Take(4)
+   "selected" => _criteria.Conditions.Select(c => c.Key).Concat(_criteria.Rules.Where(r => r.Enabled && r.Source == "field").Select(r => r.Key)).Distinct(),
+   _ => _criteria.Conditions.Select(c => c.Key).Concat(_criteria.Rules.Where(r => r.Enabled && r.Source == "field").Select(r => r.Key)).Distinct().Take(4)
   };
  }
  private List<string> ColumnKeys()
@@ -104,7 +104,6 @@ public sealed partial class SearchView
     string path = key switch { "english_name" => nameof(SearchRow.OriginalName), "id" => nameof(SearchRow.Id), "nationality" => nameof(SearchRow.Nationality), "age" => nameof(SearchRow.Age), "club" => nameof(SearchRow.Club), "role" => nameof(SearchRow.Role), "group" => nameof(SearchRow.Group), "ca" => nameof(SearchRow.Ca), "pa" => nameof(SearchRow.Pa), "football_category" => nameof(SearchRow.FootballCategoryLabel), _ => $"Values[{key}]" };
     Column(spec.Label, path, key, width, spec.Numeric || key is "age" or "ca" or "pa" or "id");
     var column = (DataGridTextColumn)_grid.Columns[^1];
-    if (spec.Numeric) column.Binding = new Binding(path) { Converter = new SearchValueConverter(), ConverterParameter = key, TargetNullValue = "—", FallbackValue = "—" };
     column.Header = new TextBlock { Text = (key == _sortKey && spec.Numeric ? "★ " : "") + spec.Label, ToolTip = spec.Hint.Length > 0 ? spec.Hint : spec.Label };
    }
   } finally { _buildingColumns = false; }
@@ -112,7 +111,12 @@ public sealed partial class SearchView
  }
  private sealed class SearchValueConverter : IValueConverter
  {
-  public object Convert(object value, Type targetType, object parameter, CultureInfo culture) => SearchColumns.Format(parameter as string ?? "", value);
+  public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+  {
+   string key = parameter as string ?? "";
+   if (AbilityVisibility.Current.IsHidden(key)) return "숨김";
+   return value is double ? SearchColumns.Format(key, value) : AbilityVisibility.Current.Format(key, value);
+  }
   public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture) => throw new NotSupportedException();
  }
 }
