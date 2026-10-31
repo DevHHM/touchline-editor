@@ -1,0 +1,555 @@
+name: Import verified 0.14.3 sources
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: touchline-source-publication
+  cancel-in-progress: false
+
+jobs:
+  import:
+    if: >-
+      ${{ github.repository == 'DevHHM/touchline-editor' &&
+          github.ref == 'refs/heads/main' &&
+          github.event_name == 'workflow_dispatch' &&
+          github.actor == github.repository_owner &&
+          github.triggering_actor == github.repository_owner }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GIT_TERMINAL_PROMPT: "0"
+      GCM_INTERACTIVE: never
+    steps:
+      - name: Fetch public main without credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init .
+          git config core.autocrlf false
+          git config core.symlinks false
+          git config core.filemode false
+          git remote add origin https://github.com/DevHHM/touchline-editor.git
+          git -c credential.helper= -c core.askPass= -c core.hooksPath=/dev/null -c http.followRedirects=false fetch --no-tags origin refs/heads/main
+          git -c core.hooksPath=/dev/null checkout --detach FETCH_HEAD
+      - name: Verify pinned source and atomically publish main plus v0.14.3
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          """One-time pinned source import. Archive contents are validated, never executed."""
+          import argparse
+          import base64
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import re
+          import stat
+          import subprocess
+          import zipfile
+          import zlib
+
+          BASE = '89cf474bd5a4594f6369da0d582f677897b587db'
+          REPOSITORY = 'DevHHM/touchline-editor'
+          OWNER = 'DevHHM'
+          ORIGIN = 'https://github.com/DevHHM/touchline-editor.git'
+          VERSION = '0.14.3'
+          TAG = 'v0.14.3'
+          ARCHIVE = 'Touchline-Editor-0.14.3-source.zip'
+          WORKFLOW = '.github/workflows/import-source-v0143.yml'
+          ARCHIVE_SHA = '2d8bc8a1f2f9683da5bf31d004a774b72c4ab828f60724aaf00e114f0b860bfa'
+          ARCHIVE_BYTES = 6620795
+          MANIFEST_SHA = '97e22d358e586c9dc7a6eef755c148979a1cd19902fb84e4055f4dfafb1946e4'
+          # Compressed public names, SHA256 values and Git object IDs; data only, no secrets.
+          MANIFEST_DATA = (
+              'eNrUvVmTXceVpflf8FwAfR76jaImWksUi6AyrZ5kPpKRAhCoiICUqrL+7/2tEwEgLgjcG8yHbitlCgJiuMfdzx7W2r6H//2st9v17P/6389e/HR19/O7/tU/'
+              'r2/+vl9d//P2q6vXb69v7p7fXr+7Gev5P4wN9sW/Xr/SD7++nvzSM2tMCuHZf3t2fTX555pmtVHrKCE6P2Pds7cyTMvBjx2L633x9cEv3P7cXEz6iGR6G9t7'
+              'E2zzM+QQTUmutNHCcCOa3GPOc5o9Z3OuGBPy7MaNGXywtj37f/7bpaWfX3Qys4YeptvZRhuzb3Ws4mIMo6XQ6zam7ejW40XP6nPILZeenC/WRfbbqimN3SXn'
+              '4nC5tVJGnX37amuoM62QtYdc4yjvF33105vrm3VmbaOtPJONPndvjeu59ehHtTn33UpMfeYYe3q8tppXKSmlYE2rc4cSfDHJJ5s5MdNNMKYs47dvLZU1bKzR'
+              'hpq62yGEXJzW9vUffvfdjy9fvJ5fXlpuq3kz1mBX3Xc71tqFf5bm0/bT+5VM3s2cHJvzztqw+LloS/Ezh5J8SzFaHfscw6e+aophbmeX62XG5bPxxo5YrNfS'
+              'fvPXb//022+/+8PZxaXZkwnDr933nsYhW6mnlUsyydlRaiizulkfL27knFqZLa7t7dw+jzyz7yuVbWf0qbQQamFzcVhrO1+ezqUwc095mHIs7pt289P1i1fX'
+              '4+9fXltPrZbAYVfr6i5mmxbcLsEkhIr9oyopIP6P11a2K334wluPFf1yfKH5jMSWVJEABHC4medAVVg8b9FwmDmaoe1b+3Ftd9fndKHamTgClrP6sibsno1l'
+              'bcmU0ldoNrXUyz5ZW2APbYySmg8ltjRmieyt7pVY4Kq1V8emtgttdM9rdMV5jrHys3GYqbX98Luvf/vn3519pY230QMaxUZDK33bZdssfmVX+Wi/kOjMbh8v'
+              'zdkQ4xy9Wd5lnblN7yofWwLyFrMx04exeeXW+lXZsfVt1TJiG/xAOFThxz9++8Nvn3//9Q8//o/n3/3lx2+/+d15vUiroJNpVgxAmpZ3Y7pfwcTpd/OYihYm'
+              'D22P19md3XnMPidClVAeNMfEtmYw2YzJ72bPASYMwFro8Ko7cgQekYhI9jrWef1u/Pzq6s16/rt5dXd989y8sO6FeW8C/9fV2y+vmd2PNVs3a6aRvC8c7IqD'
+              '1zO2yTk0M7N14eS1u5V3sm7UNba1Ja7VZnamRAxzSy6sZNNkeXsMw4uZIW7n1lzW1+xcyF9ac3hhn7TmzIeFwAnUkGpYrrluPAdl/LQNwa1pb49BO1kzL2W6'
+              'iZ1KPbopBcf0IAyRZSFeiHvsbslqtFkrFspWl7GdobiRx9Ca2+3turv9al+/4c+//P5Pz7+/WXfrzWw388Xdf959ecHDxOpGMya72YIs+hz8wOqVZZeC/KEl'
+              'yZ4I8ESZ56yb947o7pl5++zUxLHxOzhOM1eKrlp243xdG9uwe0JUbN/DhF8s+ONin//m+tV8cX23v7xiZIDnNUxPCD56LE/gwaZ0Ph59nzxc9tKfigWqb+PG'
+              'T2HEsx2jxoo12Um/1ydfHmkvz9ZTG2x3b9NHQEyafjifW/Gf17x69/r8mk3E6iXsNGa14Ow81grJ438dPgGjy1tOq516c04umhU6QtFDrR4THdbqxdlms7w7'
+              'oKTP4nCQqW2D5UH0MYR17zaWObfmH9ZP7161mwuLxpxhE4azCV3DZaFyoWN3A8Zy+o4L7/zzRJb93uAmXn/j29bio5wOt/fa7ZbJQSWyL9U74z0ax4vzIBKT'
+              'MCt2VH9u0S/X66vL4rGQRp4+OJ1c0wAL4aEwHuYQ2ZJx66m4dWI1cL38AkKMr8LirZhdwuE7PEJOeJ01TOW7gJGB37EBwxHBf5wN38fM/GLVL//y1x9kks+q'
+              'HqdpUjYVrxn1MjPvOnXTMx8so8rxpbHriVBknEADLZQq0ZgoZy1tg1pSE/xME1ExEWAxV3PLhoJftjg4bFHwLtZHK70a129uv/ppvVk37e7q+s2L/7i9fnPG'
+              'GkeAClAZ/1hCA2hYJK9PMKR1ftuG/fQNO/d4tQs8vIBk0soethsCBrxqQB1OKMcKHrNrFVzMwht2LHfzG3mIq2xk7hervXtvml/w7zNGLYLt8Vog5o0DcMGV'
+              'EZIFCIeKoEEIQJcZAPJorRimZhtoSxDRtFgNWC/ajdy2DKBKK9U65YUyFg5mkA3HsRDq0lpe7sxa37756YwUpAoqBEyjbXNsEHrDirlg8c4WJBBCnAjeybkO'
+              'b5FIvC9qji4JSJuFi1ycL3ihgaPBHzshyc7tBF9ZLtUBdbBuAyQfrfXV1VhvbtftVw9g56zEcjCIPQodRw1g3zLcwkn3DFQMi7Nb/CXWE93CIKWJXGZrPA5m'
+              'L0S4OFclxjtaBBgGxfvPBssMx4LzcAbWu5Irlid9bq3j1dXbfi2b8M+rN8/ji/DCP/8TGOi7lxc2AJBFv6sfU2YqJ1YLgBxpLBwq6H41ThKedHLYVaYvymo5'
+              'Z6sXgGwYiA3vi/ifks10rBhHuivQzg0MH5DZoSYzfn4DmN8rYIX3QKGHhT//+vuvv/njhfVbixdZomsGKJtn2315iwUNFt/LAg3IAEt3gtJZzGRPFQ2sQMDo'
+              'XS7YZd7LCnjSDVrlWEoucyBAQ8Qwgrg7gp5HNU9d/5+//fGC9GS/WgRCghw5PXBcAh6llsUdcSfLYktsP6E/0NJWeUsY4QZ5x6FEAIZveJFa4cMJFuwhbx0A'
+              'vTB6mxeC8m9hMIzoOL94/3/44fv/Aw//zbvXz1+3t8+/ftvGz+s5ZODCqWNoMZGwswLvhW/u4GrGX7MqqClqB8hkL48XbjJAf3kn+heGWRtWsqaLPUOzG35q'
+              'NGj+dnhaMC6vdYEJ+QfEAEO899mFXzxqZ7LtzsNb4B04XsjpqBVzY6HWAsOuAaxqOeFaBUY4YWTRQ6yqAj1YbdfjhsoY/CMWFAbOnoFfHabeCn4fj44zMnCZ'
+              'syue6208v2Teqy3dgoKFGIJO1zU7K4yfddkwMPbbzxN6iAosD0vIVgIxkR6I9kQWYGmtQipL5XRBj2vxiTv0gJT7BD0CurCtzy75bbt6c8eCd3v36u75Aabe'
+              'i/of2/j7B+B6djec/MghcEL45lSa0L5JgKIwMsrbQmi4o3wiMiEPznHAZEcGr2DHQxmcRsTLdQfmq8CfHEBaE4UItnuEZvUBoIVclvxrdwNHO7+JWRFsXLdJ'
+              'cfvt4+7FN/H/CjQ1cPMIaV+nuAB19pgZ7JHDoQbUFeEXmuwAmoKQ5wBFzyjxhg5tB3MblXfr2Yrr2/3aTfz10iYah9bKlhIs4P7oqF8AlvaUoS0etDBAW+EE'
+              '4rptjI3WlJnAQfDRzJljZzeMEmnaO8zmBl7WNQjyxv56BXp8KGZjiH71Jtbr6/+4ei7Mdnz9+euru+cPv3h+cxU/kJZ1ehktIVoLdFgmx14TKsCpA8R7OI2p'
+              '1AkKntXA+ZGpWtOeAas/h+JRDtTQDAcD4zL8mDMA1TobYKvtApa2n9vcT6+e39w+Df/MFGLCDwEdEWhYAbK+EKMA03HTtKEnj3lC6WA5yE1V6CL5zpsYnrPv'
+              'EYYFnc+wKQvl8BimPKzZfnVjfLC5D0Xb/WdN09ub630FNv7pucX+2/Lr/LCvOMsaZ8h+OGMVcbZrwyd88hbc3zkqPNxJPN+wksa+x4y4DbYzh3FtYZQ24siL'
+              'E0SdZjavSAw0PUYe0BRb5K/2V23isjNuJSzMfGOtwS/DNrrBS7iGcPPesfGuoACnHNUCPOdaa0KeFLgM/IntiR2XUqA6MIHgE3TPw0vcSBwMrJYXZeC/n8X8'
+              '9xGt2wvMz6Vuzeq+8Mko5gL8Dgc8N60Z6PWqfKPbfrJaWyD9fuLRQBx4bA8NqSwVP1crLHtDRxGRVR0fnEBOA/dSvOlpb47jYNT93dWr+by9vXrx9taeIVC9'
+              'A8gnHggTN/nI3K1PY4LqE/+xnCWcZ55Ye6eYoKkJ5cKxARec5JpFwQqAePjqkjjXckRzMx7W1yH4Z0BRIef4cXk369VqWIqzSwRWsBj+AMHY1SNPcBlWbkAo'
+              'fRbjNgfE2z9xSArvbLsr1DlDkKw3nqNG8cAuAaiCS4WDZRZtRPCd2dMayylu3GtyH5f4z7f7/PJGzaAjPIXEkpcNBlqzZmHEIrKry7O5xsny9uw9Akvqnq0J'
+              'yqau+I5ilRlzVqGftqwOq2PbiheBfSrnHPlYk/ehUHPd/v3u+u1XHwKuL755dbXe3P24bpHSrzvKdfevf7u6vbr/2/HlF+P2zEawAYndb1QcS8tpY1LhmBvT'
+              '1KG+KeNOWj0xb3YGECBkOYKz+H9cJ1LqMHd17urAQwDygSMttQGfEXTHr2CSd+uwvHJ5I9+8etf/cHP9z7ufv/5Hu3rVnrqbOCDb3gB34flupRKAVo2XY20S'
+              'rccx6HrvJIohh+5A+B2HCQTwfo6WICdRd289xF7mMtBs8MsIAaPpkDxUpu2KaKcnvJZvrt+8WUMBox/WuP7HunnCTioWulqdb1zA1jx91ZuZe+JawJptJOTM'
+              'ncQNVrW6f1gR1FNTxtaEnHitAwRQcK1dmB0sAXjPnE0tit0ZZC8DZrBQl3fy2/vv/vX2yW9EF5dQfK+Vp4jX6wobZt7G9M2AbQte1cAfHr8RgChGHXWYGOdD'
+              'aHxYLtfkc07AhYgFbWwF7FYV12+YzIapAVFgoupT9nGHWH1/s2750hHKu7yT4lpIgYO1daEZDVCgqJFbEIvmFZS0M6dTOsimM34ApYeK6NUllyy0ANEBNBfn'
+              'bDag/uCxq5OXBhjKeKIgZgU1fMobuWo/vbm+vbsaL39uN3jWyxuxIWHH4YYb+gTq9QXAi2NJc2LDEgbSjDBOYbJpmDWMHjYeNBnX7g4MCmgT1cJcJJBXGf6e'
+              'dknTQTjFYWHZOMal/pqN3F7eQta9Jv6Lg5q7tZCnHP30sWFN9wh4CbuxQI+30JqimzDarlyG5jYwoiFK0M6m+2rjWe0yOSXetOmA/O0SZhD2g2N26fIW/tBe'
+              'L91/PUmc7qGs8fdXmE3XJlsQrPFVaxxIYdYGczpxcEAXbE+BqMN1YOdRCQXZQPOzMWHiLzBximYGoWwwEyY6AkEgdcaMeHkLf1rtp3frN5je23VzeRPBWFjF'
+              'TBxinLpa5lgT7rVIKXpCOwxutpyQlSROj2sAMq4IWsecscYacaN8NPsxYW+bSoe+taXLKdDUVvqDyKlZT9jE1T/WD+vVdZtPkKTVezK2OujVhjr6hMV0UI5c'
+              'q28LIhhj962fBnlQ5j34EXwMHnNPo+QOnOeGz+AvoeqgueIX2MUl+H5yClUHgLEHI1/ewXeHTWoysb+/enX3lFdhlN1QGzuAkUcAV25wcDiKbn+Bi7gwuIs7'
+              'SeOwvniYDRKiaMuM8MaGCihfhpe4zESJO9RfSmLLsLJ5hi9jxSD2KV/eyPdt/L39tL5vdz8/Qa1LjGB1vwE7wHKodgGwAept2AC2AflFiv0OJ5YJOcJ24kwS'
+              '2NrM1ZRUwauATWKfMAcYLa/YAz+BcGF1g9FNeMF1uKe47++vbw+dfuqbQDF3M82AfnM0uN9g6kqQLaeUFTMHpoff8J9QFcm3aQ7FwRREm/ryoYH4IxYXwom3'
+              '9qgJhyOiCGyNsM5ui0kF1vX0Xbxc7Wb8fHkXE7nHVxuYIZgKPG/cjFAYXaNgXvbGCaMvJ8CwK/snQ48dLGGuaPFpfCp7T7oJ0n2KKyV6UUvXvaKfaXd890x8'
+              '+j3hurCLm+ufbtrr8+ffFRheWELQQMC2L8zGTmuwYk52jjjly0/Yja7SVkIy4Ma6+DPA4V0AWBWhbxstgM9lh4LF2KDqlQ9FOhvu343WnuAc7s/9m+tX714/'
+              'xTsY31zHxkCzUsaIVI5JVA9zGkeWBIisjdOAqAeUD93X8Qu6mIHFicAvGL6u70JHBP3MtmUsG955Z8wu2hxBIMY/fQ9vnurkNm/cl45EZCjtsgCfEluzMI2A'
+              'ubJGgbfmTvA4+52gnx4rlr/GJAqSquEviOHGZfJyfIS9L+C4BZV3XjK220BMF+/p8jY++1X28fbm+j/OGKfkIb9iZXYiA7PLLSHxEaNvZnALJlk46tO7fQP/'
+              'hQpHgBKuJitBEfi1AgdS75mnghj838wBMY22KgDPz2C5+v78Xv76djYs0ZOUYUaPsOewpqL0A8i8FKItDa890e4cqlFw6gR/G92pTJsDcDDi1BWaM9J8VMdA'
+              'H9CJNHT9h5fjIzYoMg+vKxinKML5Vf/iKxdPXnFYwHaLA5MI8iluVFza4BBXWdBURdxzKafJkwAKOB20CSzXnc50oTa8Au9F2xWEAcCOPCdw0SjabszS7SpW'
+              'Nvuze3i6LWKtW9HNXZtu/sPiFFdR6poLObsV68As9tMUAMjlyBsH0Bo/MHkLKL6ccsbqZwlhRdgt6G8F1/MsA7RXg9OFcbkPSV9Y+ue/fPFFbI5zx1JsZV81'
+              'dQsLYyNNQTkTB98AX+/TlLiZvN0FhulRW+Q9K+9JyBU/gWhNEMZ2wU5MtcFcDUw0bpoNramEuS+owL+/3b+Mdpy3qPhg8Z6V4MEjWm/rNnJCo3RrV69VTtWf'
+              'vAmtLERErk3XMLwdNIVf87zIgRkoMsSo6k5lLTtGCcpwHQazqjSk+2SML6z97dsX/9nOZXBiu8FxZvZpBLBzdCieWBWntozDOKAU259Aa/wym9rKwF5FdxjB'
+              'KUUHZoR1sVBX0B6AGsqvrJTUHZ8KmwBzsz/s6OX1nsfSE4s8WRXAXQjUBN9qE5bMaFSx0SKhn9gatDfKWeNsc2sbLQG/GmedT7YbqGR0opogIXwhItYgQNY0'
+              'SIeNY7R6dslwylfXP51dM2hWWcSsAM/YQwvw3AUdbzJwfSLRIQdwzmlkPFVMEK7f1Rw8/LdVXkca6CnHHRfuFMQNWF0GKrAnFC1iPAVPITrly2v+zc3V/Gnd'
+              'e6Wzy0brkDKcBWoPOs9bCXLZOWx9jKPxjtdUsuyJSQQUNAzpwnUG/ehMY2fnRwwL6DkAzthDTOwegIbiFt4LRjlj9nOnUC8t++W6vVVS1NlwIwQ2VYvTkBFG'
+              'Xg3v2sxSag/F91JMCcjMqTvauXWMM68EcjmAvEEBlKQcNb6X6+hAnw0s80rlR4oWqCAmoRwbzPjyur9pNwvb125+WnffX42/H77oHLB0iuECxPF/ztpxRMkx'
+              'vW620hTiRDDaJ/RELGqA5wPmcSmfGDy/lCbpm21zKgTmo9MFNvbdGdUI7OSrWQOMluOZxX82RnoejqHuPi85lOxrqEqKA57h27fy3YBbDeLVT6UmKM7Iaxm6'
+              'b7ABNJ9SKELWYYqXAeC3mL7DgCp0qovTvtMIgDVk7PwGfri+xfv829X659mF95ptim1sVqeLQ3z2mghnaUMp6kJevA17mtc8FBWEeGAklfuejmypPjJ2OnDO'
+              'OzVMolWeSQA9gsRYvo1ms6HmRj2/8Jd3be8f1j9Y+Z9Z8qsL5By9D5Bob3VPAGtTrUQH2IOfwgbX7KqLzNO8xWIt0BhZTmZui5mBGu6Gi8Vb+q4sQKHQMYBp'
+              'rVdwRc0LJWFDM/EKnrz+i6cvEI94T5ApAKMYIBVnj2s6MB8qkJYqUk6KVwpIuYtg4AfKcmth4pvqHrLl66FGnCrwPSjvAAsQQEgdQJaGxzaVfMbtf3Pdxs9/'
+              '+ce6edX+9e9Xb+b1+cVvZbY6X+DcaSqt3cBHHKvhPbsUcklVYPiUSXmf8OHIuiJta7vWIeIiXWXoPlh0fqIvSBLIZhTFv7DvpWOFGnb33OLfXwU8Dj6fl/2l'
+              'OzbltjYodQfUYozDcHCNGXFETfGqfcqhuqm4XqeQLHAlVuzJqA2mJbuJg5arajI4ER6phNmiXO45hqLtoZ6RnYcbgPuDZw973aw3uhA9f8lkCwt3Ax8ebN8e'
+              'ihM7z24SpuAhUGzxNG0XQBjHxL8h+qs43ZHvBp2di8NoKBE8QFUD+D3eSpLLBin1qhjRyjue28Knwf+zi3dQ1+iijPjcAFhnd+TMATUlAFiNSmVsLydWPyD6'
+              'scy9SwEQAwg46GSxOysqwG8RvaD6KDeQJV0NAMvsXChWC4bNnVn8p/H+8+imYx8RIEmsrlMUFt5ILeSDF7EtWEWyfMKcIJ4cKGBFzq1lhwKjy6IwqEqLbmyV'
+              'JCQZ0QSczgpu+dbxu5BA691T1n6LHuj0oVCv355HOsoJhdzFtZyxo8UEpsop2GFN5oC3LjNUYHMiOxD0hhSIt2LXZT7xFUD+LYTfazxKH3bAm+N8jRDqCLYp'
+              'd5n3MJ62hT9dQJZOl6gzKXytnL+Za7I2J2vW2hwkahg4MR9Pb/CMXQ1oi+nxRWCHU42DM3dOEb/ZlGTmpxJegjKVhaeX8umzB2qaJy38CUYzVT/E97fNILY0'
+              'gzLcdCG/e1qOc1W8BU/zeO3RKsbtMeHgSYfOKOeONyTjw+GGuEzIw+HEUVjwKl5KZQN5OwB03u3La7+vKXr58/XN3Xh3KfjaUS0sdpJSYjGsBBn7iMfXzTTu'
+              'xSt19ATPKykq5s5v2qA0Q+CCHbIzKe/Cti3Ynl/nmPkDfD89nxQPRAGsW/nMyt/cgcl+uH61XrL4S9o6xqwDUmNw59DRoBteuyuuqBpgiWMxGUM0Ty1N6knp'
+              'URHA2yOgus+gjHynghHkCKCRgagGPdX7A2ujTVk+oeCvzlia31+tVxM9xdMC0c6fus8HhMJGZJ5YDiMzAhDRcHJ4lCKvuM2JncFr4W2gHX56bAxQXhwgtJ3s'
+              'UVeHHWJjHP+GoaD+KPBWal9o+Ygqfnnlj+7hnmzl4ZnKinK9gqq8sSlnUFQqWbWYgEXYcRPaPIHGS8WsXbQ1Rn7FioWg4JhCVoyQcyi9wU4MtoczX1WZa7bq'
+              'glcVxF/ewZ/av67f3f1xvXp76eRXz6qBwGbojib02MLoXvkybhTnBGanwhEnmpq9yneqB0UkOdQVcEilsL+lbC+RPpvDwrlaZawc99eAS5hBF+k5s+7H14dP'
+              'wMW6douy1DwjOiG1KGLVYsPkIKM91tTnKSExzgEYeUsbeCxtyRZtibw7qM3KghVwywk5VvHmXBgAhRjCwBwp3fGJqz9Q8X9v5xUWTwlzwgmtCcIyC+PMQTZo'
+              'UWGF6GNSFOTETLJOfgkDglnc+FnEwhiREiV9eo+HxlnzEX7tDH1afGyuxvNem/HG91+z/LMqm/xQfXwPWQmWfR6JZE3GbovHCXFy0qdHb1BJrBTectUJCQEX'
+              '88Zg4+LsdUBgCwvOmP8BKfads3epK0iOLcjpzNo/XNlCTO7W+VPH9aGLqqhxplmsgWtom1JaFIEcnF1UntpJ7hVoa1pB4rZFXOZEhOQoYtHFj1CYAjlQ76xg'
+              '9irBeuOSblRwuu3Mqf+5Xb158Ki/DEhekJ+NG9wCfAh7cwGFbTWAF7OK2htoF7svy3pCC1H2oDJygHFy2YF6LSwF27I7m98YfjA1ior7aF63zyaMpHYNgNic'
+              '839xJ2ezAKYyWrH0VTqb5XTWjOJ5EZ7IRrBRqZyWl5ppj8pGB6XBChUj/hqLD1Gl3PpmqqqAB3Hqyre1FvNoEM8erO5In7SNj2zrPDtHZufufRk2AhexIC8V'
+              '4BXT/JBXCNMhwuGUYQ1ReAMTFjXD19kNslATCbBOQAd28QU7i1kCOFv2UIGqSvpUMZR70vrv3cD5mKtdOQrML5j0DIs/MDhZHQ9QTYBLWp0VnmAGDEkevq2O'
+              'k3MDwKYIjzOuGVXBYfpV51VVXK1bd0W21UeAB1QJ4xNF6N4aXQBrSr7pUJ6BIixvl81LaUYWboE4DM8PJJjSadGhB9FJZ+FKSjrK3eNl5QQSiKFFn+Ao/JGP'
+              'NCsI2MC9ZfA0iK3Mp2nyR3N03hIBwYOybQAvLoNJgG5VOW6Jv6FxBczS02l3Clenbjpm8xZvp7XzehIvriXXVLzikD4Lv2VrkEXM2+L4a5VwKnf4Setn7Qfk'
+              'uXDFn2IRfmxCmHAkYLjiqSEow6CxJVi1qv1PsINK6Jfy7LG1e6814QKrQMRqsMVWkLRvuoDeR/RnwljG2DluXZfn/jS5v48KXoioYSymW71g81q1cwZ5Yqss'
+              'kISBRC2hXaex2D4yZy3DCh4FW1pg5VQpV98GGAFkgtqX6hQvgWBiBKoqLkeurVV1pHjK2u/vyM9HdJTH5H3ZcYUM3t34eUycykHdFN1FEzZyfwIbWi6cpDpx'
+              'QMos3LHyIyknYVPkG99mqhR1bpPVmgJz3xW/Kqot+NLl/qdr/xgUPJ+nY5BhAMpUJyA78u7TxaH02b0j1GOieKauk9w1i6eaCWeKarM02yzr8zGqyG+q9GNY'
+              'NXZByPHNO8kcqMlCx0FM5Yg8aQP3t5nnATO0B7DSa5/Ym6XbfGy8AaV02HpI7Geqk8RpYnliXcZjbIJN02TUBmnhiJHsEms57vzS6O4oiFIXjVDwXBMx23Dg'
+              'p6399ikhfIXgV4JUVAuggqCHHW3akL9RjZO/AViG0woacDtKAp7R7SueFdrtsehxqQFFxMhCwGocHkgIRxey4jN9T2gHsuTtk5b/79c3f+/rzQXRh2X4PVLL'
+              'rNyYEDJEaaDF2y+Vb9sBsMs2fXKDvFBbrD36YgUoIvRKPtrUWRJwD1lCoYM5klkBr2DO4sS/AHPmiSbn/GWsagj2Uhoo9n7rxjSqCVEBXPk4WgwVKdj+xNCv'
+              'BJjpzbKC6cDNs9UVTM52quETYtIUwVFvIxVV29W6oprCsOr9k8uTl32eYWHcYbALFsX5uWnW8oh/WiMjnwEdWEH1+afJvvhMldZMcUSsEoTEcpRTN7sZAAbP'
+              'R95UtBmVfGqxN6WLOPaITQ5nVn6ZEg7Mb1rJ9Qy98GYo7o4Hj0118wDJ7VtXBs1pXmxyU2UnfitqonJEcLU98kIg7n3jsJLhFyFRavtUQw0l16Dqehz1GUzw'
+              'XXu9vrl++68LQl3jNn1xjAULyLPndm0ACo0yxTEPkKO0ToR6Tb+Ue3VQViBXLkPZZLCNDjXfow2TxHQr70F51MjMUajoq/Kiij2/5D9dj/bq6n8dGOApNLyq'
+              'S5D3VimrDecBWyt14QZtVnoScMBZLObJBnasVlc/VbXOVfVNMwB1XVYbISR+K7ite+gErphqvFLVkkuJ4miRefoGnhCvVMGsU+e5tZL1StCCvpWSigLFJoLl'
+              'JZ7+5I4EjrXRgNhtOdIrFfDcQVHyOmauG/LUkskdQHFkWFfELyxlDg748rlY6+Ok1wtXC9MmrzJg6xNLr2ENiBHrVZkaKNctQfETX5S9WgaFpoY4Lgbd4GYl'
+              'i8EwSigJKoswrZCWLpzxWimhlMe1uuMh5cy15vfr5lYlKg/Q8QlyA/42PmTVVEFU4+FW1PKmTCW7mQi6MRKTExC2PNpr1btHHbF2LUAa1UdsKBNw2CqFmjcx'
+              'Md8dtMb5Y+Khs56fbf7p678YARkoGay1QC2Dblk3znTW2qo6BQErh58gp3yyeghu6chSQdaaIj/wbeuPi+lZ0XVbge/4VKuGLXmogdasasTVq1OA4szqH/Jz'
+              '/3IzL0DfuuFqgSeL1SD5S22ylhrd4ZXMcbuMyTQnsN3WjnJYNgWx2ohLBaCrZVrPRT2ccFWhqkwKS7t5DZAnqKGSXO2UI7u87ifgXgxbVEugji3rSiR3I1VM'
+              'QsUXYT/70h2wCSexShcAW5BCvFAvan2E7xVixpCg1+pL1LvSkF3NvBS4VUsohkVx8tF+58sLf5yQ+wQTwxPqUsFOU01IzK6HHI8iBgUZD4unPK0TG4nZwZMD'
+              'YqEjHpaOYENNV1SsQckvU5mjuGCvTC+FfcCQA0eb5LPhf09b/IUUXPAtTJLVARrF7Lb6Xy22gBvHa2JKFibztJCyYleUXxNg2Ud2Dfqh1G/eBZAfYQanl7KK'
+              'SlybB2otfFZUAyAQfYmX1/2QQXzBvDiJeAEwDR+MGpSJ3Tt1AzsKZII6N/GX0xT0ZWxCH0ZsGFJvm1hKnbDtbpbAJ3YWbu1Kg7y2jZ2P6k8pmAO6bBeXfnMF'
+              'Nb06H9fz0C88ZlLyuDO4JJgB3B64iM3IaicyNu7kFMPoOn4PU1NRKQfaCNRxUtuQALe+ZeWp4sewlkqVsq0pO53XB/WuNT914Q+ifn8Jvs7HN5ByZYsPkC9K'
+              'a5EdWDyYJRY1VcC9oMF9nYbnOwhZjSHYswKnZUlbvDo8yg8rwjZVSu5xC6Psou4wvqAV6LPbLdVfuY8/rzfvLkRZoQoJPDYhZksxvaWy4ILrqi2DCKvqJdVN'
+              '9MTsOLWOUEcWXQWB2NXDSH23jgZFC4eqGx1XF4ayzi6LBhvBH6i3HOj5V+7ivRG9VJIBucf4oYgVqUaErJKZjxarg/3NKcbs8yclY0rIhKrCjzj3PiAkuosD'
+              '6uSAasMhDZtRcgavFwRRlBybs9qZihf8uo2cZd6q8dLtoIq6WVZWVHoG8BlMs1d8kx2qNDnNWSzYn1FmAFlA8tDurIQh3AAqjtjEvFFyo8L5XQ1vOONtk/KJ'
+              'xVMumv8DJPzquD38DI0ebpamgAFHN5XkB37PLqnEXx1OILknEpVwyWYpJIsxdYqHd3Y1VAtUccHYngzZUdgqIm3qnKWKA5jWqCqt+y/u5Kx9LcGpcEG5risi'
+              'PJkjVTCpq71YUelqhAecyhMmH8GZkIUtH26j8gCiMwjOBPOJisFzp5LS1TeDL6juYx73etv7J23jvV+78BpYQhYzgltUAO/UK4nBo4VWxbgVFuCwPOGTDq24'
+              'gqP1tHKpZ0mYgAKgQqeBmnHiLgWqlPzLN3EfHTc5ao0QMxPcr1r/2RSLnhX+rspjVPKTLljj0abT+Ik66tIgzNNbLG9M6JKT7bZydI6cG6X99YbUqRB6riNB'
+              'bcEoYkcGebkqE1Nlv9njSYv/4BkunT7UtIE1KyBiY+y9Af5jWkdVtb3aFCa25k8jUSp76RmfgaTNrQzgVo1cNFwduSomQa6UZ4fENPlJ2zw/MZIabkfzpA08'
+              'Kp68tAd8WMHr4v5HMQZMsDqAuA5l8drm1HrJjtZPXAPi4q2at8DWh2VVUE0WD6UBXRkbsEfGqe5tBWyXK4IVva1WlP05zxU0PNrDuUU3VcYe5M+0YUzP6k8Q'
+              '8MoRTw1W50UXFU6dLHqhuBlxRi0wj10lJTPLM+S4VUMCmlLqw6h4eMCn8veVuYEc4ePjmVuHl//zXZt/uLl+9/ZCjMHCQUKt6BYwH8df29pIfBOSgX7EVZO6'
+              'tJ9esk21ysCSdIyn8qDgjMoEtriKhH5iZ/0KqgCHDSBNq/To6gSTK3PzjLj8eH396imJUKpD4yVvIBlUw1q1F5hAOelrxVBun2p27UTIjRLlQMHAB+FKnK76'
+              'KqsdCvocxiqYJFgXILVHtWOOqISNW6FjZX2tc6t+9K+L1TpKdFPPxT2CC8mhZK2rO1ToEYPvZKkjR75PcQ9vpjUlInDspagKumLYp67NAQbBhAGE8HBeIKpX'
+              'AR/8x7OFEdLZap2HQqPfXv/zzcV7td2wbc6YoqjYOsI4Qy++SRwUXFA7Paz/SZRYwRtdwib1V7cBZxADBKch822oKkUV5QFGIdcEtZ9aclTLu7D50Ysr//bN'
+              '7V17dT7aypFM51YFFqQFY2nJFtWH6pKjmzQF11QNe9os6kgMUmNcvxWSQg9wRYC5ZaBUKnpG8Hvwfe9ks26s8FKros8cyr688Idw1HlqjmUCGStgqWBOgIQk'
+              'ltTYBvY6RuUzQUZO5DypAiYE3sfoUPhgquvQFLhNKUpjDEX5JFkcgR9V62sc6F6w4cwz/GVZeWp6MeZwQgtT7lU9to7idSiT6rKKpLM0ye4nNfzTdE1hsIBg'
+              'jJ1qjQpYpy+14vNwE6i+Y/doTs2KuariMEzdeck/54uL/+Ghy9FZS66Yi9KyTVY2LesHePGSxV1RPEgLMg+iOW2PWTDgTcke3RoEeY2FRGRMd+hbF4LA9log'
+              'Lof42+Uq5CSv1YOGb5zBAB9ucJ4SMbYdZQxhlZVhqiqCVvlqN/LpCYQF6fKznXYUP7riGzgVgtCSWRPnrv6C6uVs1Hu5zHhcKHQRchvVQjMXdWEQxlxPWPkT'
+              'LLoSY0wxasalMIE98EvCelh8aVTIzigW3E/7ijuboXsJV5/zttjDrcx1NbbhFRVNMQggm4BhV2dSK/yQrG4sdt7xTFChvX374nV7c7XX7bmO80cFsXq0HanA'
+              'UlCDe8aQl1n4V+xTTej2aWND0WsLKMTm9aa214aFIl9AclxRtz5oxgSarQZ6UBdbSlBBIy40jTNA/e29Pbk9xmNcaIQGem445Qykq8rmUPNitafY6Fzk4VYT'
+              'CfppEjSyYcH04BRblE5UolvL71RVZ1GVtjJUytkhTeBbJb4qPniUfSlP//60r27vbq76OyHBr3777dd/+O4vL3/89puXL/5+fXbow5YkYEqaqiPV78IZ6IQm'
+              'HTS8WwZkceDpNK0gVoR9ihEuQe1WASHJq6V80OVJVw0gBEWN9+rC+9sAPHQKxpYQvKu/WO9//+u33/zfL3/8+ocfLy1XvSKMfSjWtqwxK49z1wwCnMYWlcTn'
+              '0uxp5pU0rNSjAfmcPa0FDLND99lRqWc9C/gNnCZofFusOaQce8q7GuahvPjxcp/SBtvbVPDYBYHU1WNVG1mPT3NTt4gQsbjVz2KdUrWqDHiPZXFWiDaY4nTt'
+              'qN4OA3ltW3kC6vZfYjG+TFB2R2qSRwpG+8xC//S7r1/+7n6ghr10tqr7kS/RhBfOsKM9GYWC9cyu7o+akgJ3Ob05DQ49tGovJP+NrV54fwCGtZBrRAdZnaPM'
+              'qS7XOFg19zLYcyccWWc5t+Twwlxcsmp8S9ia4ALK2Z4HjowrUz4OAu2tA8eeEmIcdG5V7UWUHR5an0ZpeNjzgD3PPWHaAAa6L2BL6ooO0cREqru3GiyeX/LF'
+              'U8Z3zeK3ejgHpRFVdGMVRDTokh0t5OFxnRbIg53xl1slwF1BFF2zR9AFWHdhbVVDaRCxtVW3qgTdon4SJhTsz549/GLJL//6/fd/uaxtsNzaZIGTB78Hv2Ek'
+              'yIVzEcqYAB8Lac2nsLQEp2IJXUogRRUbUuI+0sCzWi8i+NErwwiLNjMkva2K4NTU9Bf7cMv4eK1//f63X//4u4uGDGuoDoRN4MWC99VbVAkTUNfinAEjm1CH'
+              'P80xOurZi/VjZ9UuR8gIbxpPjLc3Rv7Ni5IbVHbrHgcvGmUakj8u+n6x1n/73Q/f/v7bb77+8du/fHdpwZqFsw2CAIh3K4KJJqgGMfaqCQDx7hIVKjttRNib'
+              'rtpAIuCfrXTjVJpc8nArKQFMxTerqrk2JNKqIbC6AqkAAmP9S1P2b+vmav/r+XvEfLYFpNONvGJe0xzX9VAnFoKJ54DTKoAxhxPbp0F+W5XaJW9sMGtdgMwk'
+              'hF7xzapEXac+sEgV2BpC0JfGDIE9W1X8w/5iwfNjWc/zcf3q1Rp31zcXfDKkQtOzWt+43mPykBony7RDsMyC9+kln3b0P3qFKC3OqYEwljwhqRpLBe6oM6us'
+              'EzSqsWQtOHt0G14NdgXQtzvHX540XOrm7nKn0rSxXV1dJnHwsBL1QlRPA3UUZBtN+ZWoeT0NeS9IKQ4iikyJrSLESjLO4B5phEtqNoR/c5CudEwEwQm2alUR'
+              'EY40v9Oxc2//dcazYWTMDF06ARQu+F6vcgTFaI5pOP5o9nu6QkQ9T6tuqlAUdXQrOQB2nYrc1TEeLtJc5j9dNyMpb4eR2Edewpz3pckfuNFX7d3d9fN395lv'
+              '583XqOpx4NTKW82Mo63ZR7AsKN6rZ73DaZzeG88kmrlVfHc0agQc4Nqabv5StVndVY6+tPOIQmLARwVMYhZwwwsaebrSV8rq0Et/fv32YYTKpU66Kh5TG27h'
+              'VVhoVq/SioXySdlqKSmVD8STTysYgUDqULNt6aqesFvo3ovLgSBE60DwyE/EOU/d3IdotoGGAPLwl19Y9Hk/ppo2s0ZAcwcWU9UzyxUcEFQgDhwEkItFnSjV'
+              'Vu339IuXAKqpQYHHVgUZpm8R+VA7/o2impEWZ60ytNhwCx3E7w4Oertu/nEFQf68JfjqKbMJwbfqNZxVFLyqmv0H1Riqq7IaWXN0TXfGpzl5y4PKEIRRLaxf'
+              'E/TAlVmRUItkN0BIVL1cOaLxbuWQpjLqQZyOL40nLP0Jo+RUacKJ8WTnBvT5/sTR/noM0EmqboqfFPvhW4zGz211usdLsvaYjp4/8CgYIZ45efyQusK23ZIa'
+              'Mldcddhe7c3sE1b+QJCeP4EfeQQaTKJhENtpSWA2papptNLcaGyzKl//ZNCm6m2sBMICp5VX2MM2fKlP5b3xv4fhLQi7rkEGHtsC6RXECDntp+/gwuJ1TzLU'
+              'aBM2hp3ryu0MaoisLEH1exsIwVgnBqVHD65XD7XpK+poZeyms3UatUcGoGpcl+Rx5tKd2gRY4PNQfMxi+Z+w+Nub8dV6c3fzL5Z/5lYYdj5TwPp6lLNoYpfn'
+              'rEOMSjPRIIShXvQn1Cl5jK/SbstWrmazG2enSRUBQ7Qcbsnjl4r8DhYfI1BxNmbkkGGwxaQnLl7TT9fN2dWD5VtKgK4p6DwwWt4bKS6HZ8zoFmYJigynmWPI'
+              'TMqaE9SPrN9x9CXZS1UHc6bYeGsBscOwxqZ6b6OUV3j4Lmp68ITV363bu68+4hD98+w2JsgO0+s0DyrDSEHPAcxTlVatxMimCD8G/kSCOEx+TIGBgvtxXh1q'
+              '1JYMAtM0tcKq9kzZ5erQr2tWH71DNXRZPFp66jZu3r25u3q9nrAJ1zCHy6t0OKJiFbYYBiroj3oZrBBgKOTTDhNT4Qx0XJUTvigZy668O0BFYtmxR0NdC9W8'
+              'QT09MvhEzRdzAr2E+05NFzbxz5v25qdX6x4NjjNMIarzg6sLDLLLMetPm6lm8VA0QevEiJwWMTrN79KKG6hbZXJjGKOmrVkZNhNLn4fuTiJGSmEmNGBgkFC0'
+              'Dac8GNjDNOL30a8LtiavoomIHbphuyrna8e1JqfGq0fj292UfFpOrwSQZKyS2urKE2Nh4WkxClBMQUkskFetlmbFltgwrDBNG6dGmRl7pAVLH+X7b84Fz3Gd'
+              'Xo34pwHQdSPXqItaHycYQ+ZuhmpOa4cXDzE4dTCHm2NqPDA4AeMDPNPCaheRUP2eLm/4bUjNUciRHLi1hg9rO+YTnF2e9ahMVIkk68ERA3UGGALexKILSL0i'
+              'rHaeLi+AuVWsZqFPFvvus1JNw57KWi6972WAX+whzJZj8FkZyqpeycPY+w4oWl7Hkaw38+z6BM0byBQDAEXbBtU1uFz+3hqQcsSupnCnVBVUBwNXSaflWxq4'
+              '5IUBwgqhqoH2xtBByZ1m1mXdzvpcNdNmu4ppvx+a+Gh9D4Mp1vmDnHgKVonLtSrWUca+mJMquo6eB6gp2Cee+DtNHCimZI0xUK8DsRAHES9qDNjSCC6pWBO/'
+              'YdCTEory/uCHBVDL+fdPF/rPdjd+Pr/KiUqC1Kuk8aBfeyelncHqgy7l1dW4nx6nZ2kdOgcPzX20oCbUShR1cFl+G0QCV4Dk6h4QPpMT1rVOJTIeAZv8cZWX'
+              'VofhQDm6daxP9RmxddyjXRoujPnheNADdxrvcS77HLv6fC7TNiis695UE/2yErE8att1j6DQKis+SpSFaS0uuNyXHR+rO9qUnV2esnEi0nNU9g8NDphjpYne'
+              'IWf4U1ylEqNOyik3bkhJ73EuU4ZuGIUuh0dwYXW1DDUQCCr07uAJ3U/zg3LEUGdjXDtd3kVrg7k2ThxIXQoQyfsg/waGVed5pOYWQzzzqbURu9NVO+fLofHb'
+              'UlyvxhbqYsN72JD7oei1BlGpDNwp/hPUvG7bT5Y4PtbVnl3pCA0SAYYueEjNyTbRgSa25oVWFbIZUz7N95V97/xE1nB4LKj4rnx9Nk5zzaAkqo4TyeoqMIdn'
+              'TA1kEK0Dcs5PVvqmvV5/e/WomOC86jTvfdsOOA21LF53N0c1g9roBDhuSyp9i6ftzNXkZ8+jNYVbVgUz2KOhdmNWyUQR0wZXVlu+ZPBXoPDVOWW17SvFf7Lg'
+              'mw+Vm+cWmvuRDKe6I6eiX7u6W7gH24U4luYhT5UDnhbvK4+X3zvGgS/1h1JzbXAFbNof9zEKsbthdG8BKDtyCwOcaCkHb32y0FvVCv7t5r5Y8OyhqtdRs5qS'
+              'gjvU/diGDk/gTAhN8T7FddrpKHJOU6lNunGWB4yA6cBSclFBeZpqdQpHSiqcUOVMatBmDl+NlWJc8VOVEqC+hdOc1/2g+yiQY6hNdVvWaUZbxpRi76syH4pa'
+              'DLd92vRG1626Js9qtj7A43FBJEMfssGpACvixk/hwFU3i8PUlCsZLWfxYO8XOq5fv+W9PyTtnVulEgJC82541RQFrKCCSFb1byUZpBP0VfNpB0UNytqxK4Wi'
+              'RKxYAwk4FV0W9U9Qw3TcImBPvZSG5aXgH6aKT5xiUvfN2LTKR0DzvOIfjQU1CiLOXaaCImA0pbstjbvAJZUcUzrN38galK6Ot1kFZw55Vq9raFNUnhBUBD5m'
+              'usM0+d6iUt10q6/mRzmY9UHx1z/gfn97d96G4pSVShRYIyrEqhCpjI7WYAV0hu9qbDFP+9XMiBusGBmnnk6zV5B9RelnVKd2GADfD7wW4EvncPEJyCzCZFSX'
+              'eR9V+rDA8+eHadQwmq2szGaVOq64zzBYwmMUWpg4UGjbaa5U0Vz2eAzzHqwQDwuekKMtKkHQUHElgfFh8Zg0FZLUUO0IggYNf1jef2p49DoP2YxKROYxx28c'
+              'beUwEuj11oAmnm0qDB/YtU/PD6BuwOwp2lR1natyDXkI3/BXXv1SdT+4hyZ+T/7JP3gtRW4Yc/9ogTftAuLFYcC7Zb012gDMrM7Ps+nCTg3LdGGAt46nuZUN'
+              'fqjmUazFqyB5IXkKBOG/doE9cOhgKzDxQoPxpEZEBN+vSI3Jp8v7alzdXV2Ak0dXqqihzpyX7maUzS/LURWHjhloa2I/HWLCmpDLwMuzY1YV7QLY1IazKLdi'
+              'wyXiMc1a+MeAfRtkGJepefM749jfr3KrudP55aWk66nhxV5zFU7DCWtYh1dLna0kROvSKc7YPEWzBbFHKpKeugnv2JredG2UnVKy8QaoG/ASVHAMg11jYCjQ'
+              'FVvfL++no6/p+dMLKjIvq2Zln4QC6apqIjWa1wTA7YD/yZ+e3lZmmBrYrWWyMvdsVTd2tRRZla9ttRV1GYduj6auA7LDa3cdWNrT+gAkXz30tji7Pmi/mMdU'
+              'fQ3mNJUxRRI0ghGg4FVbDSs+bZqZ1Y4GrGaUyq85Q7hsjxsC0QJsdfYKpOYcIVvAPVBg7JqrnVNXSs379b1uV+eBTtpG6ZZ9o6XA52LVJT5Or0lkvPK5sXFA'
+              'ntPCDiHZyaHC8EorAMmBLxGSGBPCiwBqhitI07PnrOGAAxqhXoNl5m0+iN7r9fr65ryPw1VincA4XqW1qtAcIvju6Fnlg5qkYaFP273m4mzUYPSjnYiScLxG'
+              'yqoDhW0dd+StAnfSfKVJ6Q4oZKUspqri0XG6vK/+5zvUd+gC4OxK0QxAKDAlHzNmNVMJkVxoptrJq6J3ds3/O4nfRjV+BH/JpVVoCors1RqmdM2CVB6UKvwR'
+              'ATXUE+febAomrMEgfPqHlSpN6/w54vGxWknBGCCAQg6W9YY58QEG1wTkwXeetn+EX2Xn7FRadtHtMQpmkS/WiTx3c9ilbpLF14Xj7lce0ZUUlHf3QQZ/HfJW'
+              'AHLnpjyLLX3sAbSvASFNqZxdYZm29OmPb9EUuKmA2aJIYYpHJp+6JmJa8HUThIBtMYodg3ZhHvtIY0AxQZG7748rvbv6x/pbe8Vqzx/ncZGXXREtUvh06PU0'
+              '6KySejJsMzt09LS3YGoW38bLRWX5nb4yELEs5YKrp8ConGWWrPBlgGdWzqEGXAfNg27u4yL/cfXT5XNMnBTa5lNsRqO58LdKG414AZysalchxO20o07m7NV8'
+              'KTsQB6Bgq1n8wHoprUKXevDsBIxRzD4A3p0b06q1kdcEAxffL/H6vifv+VjPtCoSMNDUWNTpXbdmwKaoi4JRJqZS3dNOu3k2UBdu2+uKFDdUelBZCqbLTAAc'
+              'v5Y1vE8XOziZkDPEayt9IW+IWFufrO9vsNc7vPQFvS6qowbLq3OqPapz1ItqSy+NppAqql9OzlHVZFMuQ3NGgfgKhyq/1LM64JZV11VVOivXsx6tzjHpui1P'
+              'C0tgP5Dsp1HAhT5AjC3AGFPHi4ZqAPLU7kU3K+rXjBU04zTM09WSX3fTCYSq0ci4F9a16gjjQNwb8XTKUlaoLI89TNAtK55+1F+u8KtxdFD/2xP8tQcoCS5g'
+              'fOAtwBSgFawPjdjqHNC6c1XzzU5SozE4Rv1C1AgQ5pjrUEeFY0bEQBXHMPmoXQswHmXkK08yymj5Xh+yDk7Xu6/+8+7dzQXXndQJESu55tawdm9UE2c0uFPj'
+              'uTWo00YjtPI4n7jcR5rhOqYEJBsu6Fv2UbMsZrJLNxLKkbb4HF22QzdUAqwB1VDyzyz1CWeKyR28OAVCWYVm3Eb13YYeI2+a96W5z/E0XsHPoMKos1WlPrBu'
+              'qso0IzF7FScUoIGQxiZc53bwahuit5ogwY66Nb9c6O31uGrnHVFfVnXSyu2JACszlQvo1HQ3T02zcz0NHIn7ZORgA31x1gM/bZBI9fDtboeoDm1jFA3ERAFU'
+              'cAmTAQhC3irQSm1ry2dO9O5o9H/+3Qf1OcNhO5GnBP3UBTwgOykvC80FRqTm82kvD7d0G4i3Xmq2VkTdpmL5yjy6Tz/HBalcfahNKJJkrPIdMRi+IikfVnp/'
+              '4/Q3zaw4q0oqQU0QGA5k4oxUbCgoOYoDBdteVDpQxolbjypAV4+0hW4o4OqxSBArcGXCt6pNYFYgrWkERlPDXqUwzoEEF//QdkxrfHLYp2k0YI9q4TKNGoUF'
+              'KEhBWKvJQ+Xv6otTTitnFHRRN7u0Vbs3KqddlVJd61ES5tSWRg6YrbAN9YYF+gt3tgpIDx+C5TCwqwvvWcFxxYpCRnvUCGbbYpYifFYBOsWVErbkdBwMP6+M'
+              '+jqOltghgzbGSrhVlEbdFWBYVQMuwFUoDyhJg4HbEMu2DwPvH5b35rZdjp8CEsfSi9n422Rk6xumPqjJhyKhU6mEaczT9AZ8sgHwcjRN8+RwrkW3xerrAB4U'
+              'xUwuyU8pkrYjbnyqR9FCcvQ63q/xX2813ejtz+f9OdZYhwhXCV6tpGwDz2qWgQqUNRcCbKyEo9P5RhNRUxNUcUvXQBI2VL34PY+YXnYouKaXzX0MJ/GaBQTJ'
+              'aDCS8TFmdiHG0zWgcapbAQKTNZh46YomSj9BO81q5AY457S2r0dwhNXoT6PBFx7bokwKq6ZZ6Wi+jcPSQGvNEsrAq1xVKNuF5e7zd9/f4F8OOLqIazkuRm1e'
+              'I6J9ugQTjOh9JLwO2zdAy9NqIY3A6KPpap4fTkvz3prvSVQfyD50x9OG65qIFjTXB8Y0VygqbnDuFyv86vaoOhQqet+T4fz9jWaWuG4U1K66XVOJWVOEdCqj'
+              'NWrwDdjodJzCFDtMRxZyjCq7WYKhfoRqvTrWbVvlijTL3YC02B/LdRqOBRc6Qnt3Ktj7Sq2Ynr989/btq/VabZ1fPf/u+k534OezCC062sPeRUnn6oIKy4qH'
+              'R9H8nCqQGNSN5sSht11YKe6gJI0fsLq3BkWrc4mHqgBYYOPGLeXmAbY1tm7nrNaPFQI6Pi76D+vu+ffr2yOj8MJCdW+j/or7cDZ4XtU3QgRQgdbK0hA2XYSc'
+              'GM2j56XmI7iptmFj7x1d3tuqgZvit7htSEbHTVpn1DAF4Vd21LGxYj4u9H72+av27s34ed1cWKnq9yEvmmWneagWaK47GHWt1WW4GtRhi9apbcLghNEUKR3g'
+              'eNgZwKggoLrRwqAeHS/VOogX1TaEBEGYZmimGHQ1fFzphzWe55TeNw00VoNcvFmyRg3FRXBBdcDxNdSf/MRNaqo86+t1K0UGMhkls84iKt4e7dWXMhxKmBnb'
+              'hmmtaryd8RpWqOSRqL5PAmtv3z6/QrnOHycvMQVoENqtS01ZgbEPBBHBwHh2pNd/0kl6JlWxy8a64EF7aiepMDtwCStsAtq1xoxFLQJb0d1pLwiRjhRPussv'
+              '13px7L3uW6Jy06CskIk0jsFXAF8LiZ0jRqUt+NOyL7xQ7bpA1qC7auuWl8cpZkC9hrS2hra4xFp5mGZp8CGwK3grIN7eV9rdL/OJOcOYqKSSERjBVjILthva'
+              'FrPgMG9zavCVRjmdjiFL2BwUAlKpJjEq24r4cTmBELUwERagx7ZQFbz6VugEmVCP4l3jx0UqXehvd+8Lpv52rPZs+rDlBbF3yP8KbsPAVE4J+0KuhkoQs+ak'
+              'x9MwprpgGIHerF6IOKMEEVfPczvNUq6oU8tMlRVGBEcpaEqhrV23PuaRkD59nZwA+gRAUqdhP9VrXfE9j9Li/3pSTHra07aZpXr8k8XYNM3FSvflKXv6tJc6'
+              '0COc2HrdM6ZYTE6stKmLfWwAqCPNmYW+Wf/Uqh4nsj6rWbg8pQAt14B5CFcxySfYhFLQTTCmsEoIWEvlONsIwkjiDqrlERr5+g+/++7Hl0d26TN2o9SBBZiL'
+              'toCHsMFJE5qi5tnWqengmtYSw9FqxQGwo2y/N1ZpApL23/z12z/99tvv/nD/gR40I9SqolH+orvJhDG3SM3SKDN1wOzgV47UZK8ucAUOrM4UdlZzjIH6Bq5y'
+              'fVTYHZl7SAbyoO5iapflj4kCISTlDKupZ8dPVL6KgY2q/IiqLA/YAIOztubD591dq8vlswrnM6Muta8pSMTRM650hXGdRsNnXWphzoYS85xTbNKq6sfqut4e'
+              '42IeZec+GzMlTT/AigfFDdmWJkYlVeOwMisJd2qMsNTtDsBccU5dVFPJYUf/ph//+O0Pv33+/dc//Pg/nn/3lx+//eZ3D+8GPd55aAQBgsNve9CwLgpngPpr'
+              'QKQaXQutub4W737Jm5fuj7oG7D6ffZ8i9dW+fsOff/n9n55/f7N0x9Vu5n3RGpxYBLeqRHkqHpuXWjg4E9Vqr5gOgTvoJ05uqmXHrspFAw4mjcI5olUnD/n4'
+              'gOe/uX41X1zf7cP9Yf0gfq3HI8tO+UgKG+ykcTR98uVxaIZJALiEXdG4sqOGQD+czzzlz2tevXv98Jzpj/GTqotz6rggbAit5cBts+o3ENSMUV3A1FpqG6tu'
+              'fIrwqmRxHOHLLz3nh/XTu1ft5uFBfu/eBkfTVK5r1dpRm+i9dsvSj/7u2RcNIvGQe6f2baWwPV4fYNWfedDL9frq0dFpXIXcDqoysrJHQJ0anwRizmoGt4ap'
+              'Xq3l9kA8YRCwjx4VvuL7yN+nT3r5l7/+IBG7f/0youoAVTTdPBz1IKXBB7FbsxvIkjvu1JDtpSplnD7Id2hi3greHaUdD58uR3/71U/rzUN1w0NS4zPRVGEH'
+              'YJfRZeuAz1WOAYOUdAGoVAt1l0LMl0ZRJzwkbBk8pBHozXz6hA92+wX/PjyCUSKc5r4kALQasVlNM+I9tJzCTEvJMd6r0ysom1Mz4EDwpHLg85Gh/YXPf/vm'
+              'p2PkgsZ+q6U8cLgexlZ+hkUXLKNtQsTgaA30ccJLQ3WCiik2qxmJj970K9D6m9t1e1I1+iwpIMk5Z829BgUtXgkmseq1bM3k1TUOZ5OPGX48E/zVmjKZc8VR'
+              'ps98/nh19bZfS5b+efXmeXwRXvjnf8KufPfy/UOhpuAD1TFWh2lVhy9OS3RG82m9Uo6gT80azb4SFh8IeVYDuqMJ2OceinpcPTcvvH9h3j/s+dfff/3NH98/'
+              'U310NdAJw7c1nwTkDvtDwODrEF2zi2L/mlCkGeZlaBCzkFPnxWXg9hOf+edvf3x4oGpcqvIji6rpPUqKq+2+qYNGXQXDqeFUNnS1akXAt6ouW8ZRdl1AjLMP'
+              '9P8/bNL/f7TJN+9eP3/d3j7/GnD883ruXpiHhwGqlhDW0KDuYdRN0y9gd4euqHgGW1KUu6ESZ4CxSUAv3Kv8kWZ77nMP+7ilXuJUaVCIXrUEOEvkTw2W99C9'
+              'jnJrnB+yfeW4eQytYLO8egN0JWOfe8pcb+P7k9v4uqrQoA5rqhUtD+5qMbyUCGiF0sABarAbNCMb3l7UFilgKveon3vM23b15o6H7Pbu1d3zw+C+f3V/hGh8'
+              'cCL3K1DCsJqmY8NBdYJJ0ECNKI+lCDxAYpCUgDWevOBgu+dAITHryD4p+VeuAP//3ua0o6FysANQzAMinmllTU3GgKrkLIs3ZQRp47a3psKMqvm1PF7RlV/5'
+              '4L9+eLBTwz04RZmpqB/PhAmDQDy0vXLSe4ejfnIEpQrYjctEpgY0uWh8kfm1D16vr//j6qCgx9efv766e/7wi+9lTQOAhDxrU1efWpMKlKudQ4ljGkzaNHDO'
+              'wlCHJj8ov2ICakdTRGXZzyzop1fPb24/tbd7ZJEQPj75zo6HBs+rY0sGRmVlseFm/VIOudVNuCYXaBQFci/g95nH3KdtX7356blFP235vD2yht9uECkIx6pe'
+              'PGiA7xbCDJ3ruEW5nmkmtFmpPrz/GGfgMCCnkIBf8+CPGqzieHDIWmDVNL1GiU+1dR6xgx/hGqUom0G3ix5f7EB8ANcROBAoqP+cz7wvmXhfMvnMHnlcKlAD'
+              'nexwVE1VPh7bUStI6ajMzEBit7oGUldN8C3+GPRk/HE/cB/y+UCpn7nswPianjQjBwGH0HvamkCK3ZmaxAh3BmIttVvH0qitFTYOGqOgaPzwkTcP7W/uPzYI'
+              'cm671XUn48itWnBWddVv6jXg8bBBKU88yAhYObOnpvoC+o1GYXz42A8RimczqqjBacACTpqP6LpKb5q6JrQcPcRos0lVo2ns5oAU5pxFyXgXUaTjl+1N7idv'
+              '/wiFv/3lePnjy0dvmWcW2msNgCcu1SZ3TIgIDaJdFWgGIeLQBgalwHtN7BYag0DVAPgHQZSLD//8cOdHK5AxgkDp4htKBTLT6OWNSRQv7uB78TqgEvYSCrG2'
+              'VZL0qrltYNxK9vIKPuR4/7CGrs4fPx0mI16mzqlQeqCYCTkpEwbrBTqLXT4vLDk/db2uaimHb4dmYjzzUc54/ukPY2Y/zMR49GzfEJICULcuV9z6EC7dta2K'
+              'NO0YajimTfqqRyqEm5opR1PvvYGX8wnP/nQ+7KOnz622mMdEPGX7jpwggeUYNYQDK2oQrRTX4NGhyeFgvbMKUoQAgB1P2PmnA14fPdyozSz7RQfxEnFt1RnB'
+              'g4ogATA5qbn+8PfwQNKGRS2aHqDM273rr3j47aPHtlb2WCCcrlvOBmnxq4VjeJMSLJOB4KVlckoFT9FxklvTVXPFkIZ+pLidf+yjgY2PHqtsANXGawZzjSCs'
+              'aKMa05YMfTFH0ZeKUI5r9GVdakUBb6gKpMbcl1udf+zJwLxHD4YxuqpplkWJx/AebGgc6l7bE8CHpwdEKamfXGkLSjddgkqEEoom+6zLD/4wXurRUxVF31uX'
+              'Vsuh0H1PzUVMGmqhlvh9Aresxrss363muuV0JIjB4Rtw9rJcP+qL+furV3cnW7a+eA0rVLpshd2ASRqvNIyjmZpm2IfSQ2h66SB2dUZSA3eVWAPOjgkF5x/+'
+              'eCbCY4nmjNETNWBGSw3sd2hKjVdguKqccCPsXphPbcVUuuICXomfrZC2J5ix952Vf7Fj3LPel2maJjdajhYm6wOQN0e06xgJoTbFFWorEGI1f3eou75JQOTw'
+              '5Cffd/V89GSVkSuRTxdccFqVECjYqr6AYuniza6U6AVbXFcSnE8K57aZjBpXXH7yja5uXz+Yy3nA66mMTxXaamaDOlChzks1HxGSkpVhcWRWBI+X9i153dsD'
+              'getlm4F74O/ffchP++PV7d31ibdQHkSJ4B8VtkHVgvIWWqu6Tfe58ULvZxBZpUp1YKcTEFsceNNM3stLeNwN//FBa3zjHrogRWHUkMTtJRy4bJhGMWE4W/Jq'
+              'cZ7bgq9qYpmGsriIATf+yc998wvbpdtANR3SsBb1Yt1J+QSGv8QM/EsmmOUBJbAe3BVOWsVtGqqsjl09XJbrz371Q0vQZ5DFJODRgdQaDFF6Pxrpo8K91zow'
+              'GUKb6pzhx1KLBt68r4pDKbf788//69XL0V6tzwgZpqCupQRbjAjgMY1YnIc14ZPqnmrGWOHLPc+jicJwmBTNLHFNk8viuPy4z3/544ZVTLN6q1Vzp+EvwwMP'
+              'lYlegzsSLTUKrYABleLYihqpcMyWn1TO9f68AXto5Xi6VyDkQ8O1iY8vqlFvupiFxkaVoQPj1Xskp4m1Bu5uDRQdKupuPHqOs0/6xVc+7rBmtU+HrdSOj+2u'
+              'BXCd6hqy3lrG+6lPBUcPjddYBLF1Y5aiZ+pu4c899zOvFMKPWYANHzU5dQa1DNbtbcoopl5ygTBOi1deQR2Ey8ALV5VmWZWiXH7c57/8ccMzebuL2nihK1PX'
+              'HO6IzKlzFscOBIeFq9O75iniOJQVqGw7ZYtMcxSffL6B4ee7pD/Tp8kCIq6uAa67dwP77CeGC7h73x3r6Cq6NBMTmmpU7bLzEW4/grRfeN7btw/zxZ71DFXD'
+              'qPWNq0Xwkdqi3GDNFplKz3XQK0Uh9k6YaPAshBX7H5DrMH2++Iz7rUCwi8YYIoNYoOGW7hHH0QYM0qDpTqhJ3pgHC5oe6D4UKWoorrqp57OPASMqQe0eNphU'
+              '3VAfWFezBuja40JYnWSSN6reCiKeTt3EtoYWqMkKiiJXD6AqX3zOb47CvXvT9gCPsOCQl4i3Qd6cLnFRW3ckCBWNEcd+p4EH3wMLX9zy22iQdczqAhfqhUe9'
+              'XLe37+fEPgN16JrONB6hFoRImAC+JqJ4Tcisx0yUfaTWZHyHWk92r47/eJpgxhef9c2RLvvjkYf4/dX4+8OkH9lPDRDAI41SVlbMFJOlqx8I1pFxo9xOp0Ag'
+              '+ufU4S7yjqtZA8eV45cf+Fke+XCiSnBSX6ehuIANIJCUQmGzgISwlTeiDK6tIWSaCH0ExvpOI+DBOP+zD70f4fmhl/kzN5Yu9/EGeBiN0Dsi+V2Dr0NgP4i7'
+              'tVU9hsMxSn4bzWWMRgPMmxv17MMeza181Lv2WdYsXmc128nMbRFPCX6zS1bDd924ND/7GJjy1qsmEOelbhu1z8RWn/rMj7tU9u0x9zSrgYlbayl7tKg9mspg'
+              'q9rZ4O9x/hpiYdDq2jHaaXhkuuQvm6xvrtv4+S/3CeyPmtw+wx0k7E/QpE+N33S6V86Cq+UYBFBZgOoFOWUs6VAHVa/Mga6RyrPZMw98T/8fE+GHh5qq6mFR'
+              'zakGJcjhqEcZIDqy65b6Nwlq7NjJXVfRveYcR9OlUL98rg+s/36Dn3Z/fqYJMmOqCYX1SylZiGdTdR5+36kfz6wl9IFSAu1HUhI8pq7jkjA/ecczj/2U8D8Q'
+              'UF6lGoeowDtiiQsbguwHhZMg9XarslnXkEPzw2FvCXs7V9WsSsOCvvzATzn+g/QgJmWouG6BmbLLR5qpbp9Kqi2qcK1j3aQwkCMVMi6Aej+mQAzr3ROed8t7'
+              '1S5x9a/fPljWOWNrnJBwjMoxUBVlWuN8Vabcq8YOi8/vqbE9RoxwBPyGGtzP+z6BFx/7p/ceY1W1Blfpunrdy7iy+ni0NXZiWLMdSZZTAWfNxwRNjKAiX8gY'
+              'LsQ85WGPFSRacWSPiqn4zggdqsfNltAecSJIboZwjF3UwS2g+bpeztt1VT61Lz5P8Qq84aurcUjMH95dzaZqsfs3OQFD8ehsquQnjUeMayvbHeehPmlreKyd'
+              '7rQBkVMjqjnZzX+t3WpBeO6p1zcvf76+uRvvPpBoGAt4pzdYedBoCtX/aPiyrlAUd9SsbOND6EF9ngChQBpNbZmaAmrPPO3NHd7ih+tX6yUP/CCnmhmddGGg'
+              'FKkjKa6rls4vp6t+jX9PMYMFDRKaxENULSMyrWhY919+3u9VlYqEYudwHu/jfUdzHzUYA/9klXjiI9QTNLG1sWExWWl9eC+wQAS2Fo5QzRgafhpb8MWnPYo6'
+              '/VL369EBhCPdLSpp38rfq69sa+qFX1AH1xs4QJk47E0t/JUGrVCf2fPLe7yf6f7H9erthx1WLMqaiHtXX2BMitEIKVWMaOgXJi1j30JRN0ClImME+tSYcwTJ'
+              '2fSFUMTxrMcBrseeUZNFlU0O28e5jmZUGqCZFcrrWrljuKEUE6IDFKlTBb9WQ2UGyqNLqKc98fCLDxNYnvHZSvkOBcXbml0DDjBy/7hkjZuQvgDkNFY6F7H/'
+              'oc6NPrbQ1Pao/4pH3m/RIBZqBIP5qBN331TSnxQprs0pMcuVpcQ4ZUI5tRIxxSn8kCMAKKcvP+9D8A4I8DBs+tnuatcrp6hBGV3zoAwwY20V9K4k/yB4HNXy'
+              'RjeJJVjwsRpn4Zxb+/LuHs36/eKYqmfwBU1bcCUoSyw7/J4FD6ijbrdrbBTzGLsDxstNPaWiWs32pQnWarfwX3v6g+2xR56PW1F9nIoRilID6YhAD30zVeVI'
+              '4r/MEOhoasIGtlbRNXDsKY/+iEXe4w/AaOQzEGMYTFBOmkdovPCe+nmtXbwKFBFnjVHiuVVl3lbNDnZzT3nmvZq+F12joqCsweDKqWTtHpHtVi0O4T5eF6Up'
+              'qIJd88mqEkePthowEqzxeNLzHkrK76VpeEVhlux2UEg/w0V7O+p3+pHvnUAD/JGPiwfgCQ5E00B9BKvMJ0nTRzF+OFTsTIvAVbURVANK69S3pVnFcRLefha1'
+              'QgCe8DY7vrRtoYKyZm6YpSfJ0H2o8CFA+OBLtgfxFzXmU+OWXYQjNXOwGOWTa1olfj/IT8ECeM9hAuvVpUUXErk+7bHvCyrvIUFSir0usguuYmNol9vqPY6U'
+              '2GLrwoU2hQz3AeUnkAQUm6OGH24I9JMeedCfh5MF67vu+MjS1FlZFTOwX9/7xi3nNZ3FTFTx9arC273q/9ve2ezKcRtR+F16HQPNf/INEiBAgNj7gM1uAgEc'
+              'eOFVFnn3fKdH0pU0d+bOXCaOFBMGBOu3Z7rZVafIqvOp7aklmcH2vj9yvc/oq0tHrVoJqNCSzDXli4VGVteBz4fQjSS0Ta7/pOx6HJ2sVU+MbMqiZT90vZfq'
+              '58NOgAZDIrGM8jfwVlYZMLoQ1AEkpxm+94Zk3YOAp7ILcUY0p02OJdrcfuSil22iD+vGUyOvq9McrkBjCel/CGFg5R2Jbj43ZmKjwNX2t9FZeSYI7VUnxnt/'
+              '6Hq/flEvk4uM1+b0qjELK6eLJhszblnYS1Heqj7VneyWNYpIAVazJv9C1LTMQ6HuE8nk4zbyITuZ6qk+zGpZI6gPoxF3tGVshJlqsqx/tF9OMt9JYTx9Ei15'
+              'Zn1sqX7YmRJRiCQRdkRPOyJ1IwsEmUGpiiAo2rdKMusivRQ5Bp6DaNwOt8pHJ67LM7T6pdQT/OKMLLxcT5pqOqLtTQaIpEkJ5V3tPYli1fIbsmvv6hrtXp0M'
+              'ywOE+XEs/ENU+HGU+ztI7uP49XfQ18eR6Q8T08cx589TzsfR5M+Sycdx4o/TxMcR4E8QwMex3bcuduO08eMmI3m0npZ7xGoywLrbXWvTa4csn75eW6g8OB7o'
+              'qn5oomgi8ojQk9PtTHuDFT4O+H6c7z0O5X6KyT0O0n6Coz0Ov34/+3ocWP1eXvU4ZHqAMT0Ohn6aCz0Ocx5hOY8DmN/NXx6HJj/PTB4HHT/JOR6HE7+DTTwO'
+              'FH4fT3gcAvzAdc9d3p///tKWdvEH73nnW6JSDzkVrkexlAAC+WoIDm1ENhDYJxrea3Kq2o2r2Kz78iB3eFEXbjDa4s9BD3KLuxz6NrRJKjxRlJbVFOeOqHYx'
+              'ImqlXyxiIqh57E5c+viNPo8KhFoT2mk5pGHJE/hL4GUhWTUSUle24Ff5cbSWA/VdlHjvK0LQyYpleZRMPI4TfpQmPI4Afo4AvFQ5P2dZmohCL+lFqKUCEctd'
+              'U9CCgVpfLE806VDLoVrkdCgjb8GAbl7vQ7PNx4Oi2qjYDgGERZmW9zIlsHrLSYlHcN5nVEARk9GcZugyotEckE1k6eOtq1yd+BUdR12M8LWeqzRvIDOY7LVn'
+              'EbuVb4Z3rTl1t7MYojqP8tZUCa3mrQtqycuV4UNHYPJeOxSUbETdwCMjPRyqG8kUvFPZRO2dyqYuCleH3HN8iF27KLIdX55BH4/zip/AFY8zhp9ADI9zgZ/E'
+              'Ao+zfJ9A+Y7zd5/B744zc59B5i7iy1L0JetY0ClvazjUpFdi8qwLtFDgjdu1uZ1rRfzXom+HvBANkeiwPIa5HWfTPoOmXXxDrsYur0rSYWrIWCIu9aHOSXxS'
+              'Ea9jSg0+Gcp4bYBRvQmg2fj/SyfbGzjZcQbsmwhYTVvHaogHhdWlnh2eDbfH86SPlSIi7WczusoiyqNAfSanElZpVgOGq8sdbOs4a/Uh1Oo4H/UhPOo40/Qh'
+              'pOk4h/TeZezLgzeeZy+IDZVIRDfwObORAalB6p3+Xl5nUcje0JMltPIJWFNrOj1r0t3LuE+XIZPxQlDP76s7nLK8aiAdpdn90Dw631LeVCHsQYhIkgXrzSeN'
+              'ZSDRzNeX+fGPf/nrT3/+048/vbwlyGXRnjSCpMRACtcpKKHmUI/OdraBeWOcc2qFOxAzKIDsRXDMYl4s97mt47DV+6zVcUDqA3zUheAkj1EUVpLMEhG+aUih'
+              '115cW6kfz6NzNGMWbExq+ZCbo9wVEXbXF3mFaToOIn2CQzoOD73PDh0Hft6jaY4jMB8kYI5jK29TKxdBtp0MGvazWVYd/ywjVyrKaI+b/DSJMKvcxTcN4RsE'
+              'N+mlBdYET+D0yHqcNDmOh3yGDjmOdHwP0XEcw/gkhXEcnfgkOXEcd/gs7XAcUfhuQuE4VvCdVMFxFODTJMBxfN+XXLxxmN0Vy24cQHfNnyNPlBMnTenREE6G'
+              '1BaKDEGzfpH/qTqdXZNOhrxH4RDBOgq9CORjzjapz1Fs5KTLYPTlX9/qrhWUgxG+BFFDWeaopNa8lS7DPIlc152k+omzXs9jRrn1aT4oL3eIdEvMTVM12ltF'
+              '2VKr2+D5CQp8S0XlEgs3CjlDgFH7WvMHxY2OfXdS63mU/TpFbqGCC+QDgb5QMXvnzlZKpEqpjJSRfBEzJfCwZG1PpAnnUetht/MkpC1fk9/GcW1XtLZxxNqr'
+              'hLVFsCZykNqC1aJKAU0U1+zNtlKX8dqT6Yt8XlFaRj0JW3fcKMsTXmUZtdyjoi01y5XpMqzB5yBBoUtXub2SdnUVnegK1hRDs5q5cNzO/aDo0mDHhe7zFsls'
+              'HD92hz42jgy7Twwbx3zdoXwtSAzSUT0BFqxl7Rb2mrIasFmPmg0gUcmsstSNnxFbldnaxeuVv7fcInMtpZ6nrxQvQePoJF+k1Ha2PgeKV13VyPlQhwSNFOKF'
+              'cefFUYlGbP/4pn9N0xpHYL1CwBrHVl1Rq8ZRU6+QpsbxUFd0qHGk0y2i0ziG6YrCRE4u/F1yZShHFVhEXdhRxhGaFODDVo3f68i7UNMHnehZnVekbYsK0MsV'
+              'OWkcd3RNOxpHFH1FKBrHCl1RhcZRQPdIQOP4nq/pPePInXvEnXFMzg1Kzjja5lWyzTiO5ppGM46QuU2QGce+vEZ9GUe1vE1qGcer3KWrjCNR7hBRxjEmdygm'
+              '4+iRe+SRcVzI67SQccTHDcLHOJbjisoxjtJ4naQxjr94lX4xjqz4glgxjpl4jTKxHMg6Er5qtFyspir0Rq3q7kFSnrPIO6KunGd6VD69i8nEG7RpDOKTgnoh'
+              'Q/R//O3Xlx6USzIhkx9qjoo6muZ92ngedpflhE4ibERsnATi1bl46IDlFH9Jm+PVfirE3qJPjCMjrq7z9RchkMrOuoSq5dxiT7w7KskPo6k6El84WPey4+M7'
+              'CgEhLLiap6q+y/IgkmKcI3EHIzHOfriHfhjnNbyKa1hk41zd3oyU/Jm9utpiWPpZ7URqc+YdZ+FTtvHeUpDsziEhW6uEq1OQ3EMsjHMRbmIRxlkGN1AG4/yB'
+              'z/EDP7ws9h9+6f3i4/xP3RntU6MfiAXc+UPVHp9uFbOF1NZZpKjWRCYy6uH3pB/CUtCeyGb8xSTnLuRgnExwG0zwH6AJ/GH55ef9u4MJNG4iBa+GN/SsXRLd'
+              'XdMylA0aA84UhhTLGmAxhhc/67SFWjpdSir3NUxAc6JqOUpEuIKms/xCla2JPMl5+NpZVETX03OC+tj13IYnlpA/Tr36BUzAiyLe5IbsfGbNC0vl9W7ITzsd'
+              '2vwlGcn/tCJe+IqoM6e+Wv5saOcz/+IwB6EWKCYomVk21D8SdiuxS5VwSKIbamiBUlgYp40Y7epBDclyk0i2EyYwYQITJjBhAhMmMGECEyYwYQITJjBhAhMm'
+              'MGECd2ECXQ1U+3561VallbhJc/aNjM7SLcgRg7hOmkdFTmUKaW6Kt/JBpYYwEybwncIEkqfe35ssDMQs1g11/rBJELwUs3oZjkLF5InvpWiIUTaWLNHI4l0f'
+              'cMeeMIEJE5gwgQkT+P+ACWg74YjctdVUbVisKKCOqLWFh4iA27xhnVm5valP2ZR2dsTXbkWLrXE6+T/t5O/UO+p08k5gTmiQQt3khd3W6PtF1WjEjP/25IkY'
+              'wRQVk/wZVvzWp7H9NLb/DYztSZulr2KUmyOr7vVWW6xdHRdeJzVkBJIbss0iteNmU1A2Jv/xmdy2Pmhs3zb5kB6RoCPb9UrJ0rbVGupKjf3WEqxkDJG3WTVj'
+              '6njUrLVpRq+1Wqax/TS2n8b209h+GttPY/tpbP+4xbw2j9G7wnERJDUGa0zT+oyp5xKjITeuyEZj+IH8SLHhczijIaH/SNNi/n9rMY9Y0LG35p1tVGA5PC95'
+              'zhl1qZ1sCQpE4EGQMdoJPfekSBpOruHN9mkxPy3mp8X8f89iXp7SSOJjiymhKKl1UbDUF3VVN8QuN/mExCT7r21rqtKsOlVWhJ3scdJ3YTFvNdBF5KrObE1V'
+              'KF9xi/7Qdk7VYbTN6h9GUJ6NpTKb42sWeS4oVcfp9X7l9Z5rynxiddp1o/ku/pVo5UIVNaqqFvy1aLFoni1oxpQCWZo6b+cA9vR6v+H1vlFUaOhQuzNEGKST'
+              '440Lhxr5wgVXqrE/hyRZfSaBdzmiR54299mZb9vrXXbOYauae9gtOUzeFX5N1HJoncAtrFKonuItRatxyU1VSMxyHlKf+XNe7ypzj01uW9Ifh0Zb1dSDXOwb'
+              'FaQ31AFRXlPJnE5mhnWaN4mSjbLS+un1Pr3ep9f779DrfbquT9f16bo+Xden6/p0Xf/NXNcvF5J9SeLxoHZ4FTYdEe9Jby6loc6EK1pAPh2FOpGkUjXptlae'
+              'udHIXJye5IqzhG2qWjXUNWqHVKh5efF2bV8R1Pzqm7wa0UCkHgIQbx93m8s22dX3aac97bS/bzvtnTIiISUiYSolKqdj73nV4LC0FcU8S9Inucb6pAkWU2r3'
+              'EWGsDeoevlE7be6bqYk3NpocZJcY7HE4GTZFbpG2MNsR4yoDH3KNDnBUG5ytBMGSIL4RO+1111POFLQVCb9vUUBEoq72lVgCWT6oBHQqetYLdTZvW5KVrzdV'
+              'vTF22ml/63ba/5/u0PtWtUWw754Y2XWkFKk7NdRrj4iK7js/yEmmdUQFyjfr3Yw6HBVDcbpDT3foK3do9UAEDQg6Xt7VFF+alJuCye5qMKvQ47yGG2owyvBY'
+              'h/1BLh1b2BD60x16ukNPd+jpDv1du0MTU/Ph1WKBvHUaABeboqHSfNHQFZqJh82bozZE7Tq4VOS60W3JuRZ3179ZE4lIL24WMSXJXJHM1UlEPFFfY0PIqXmC'
+              'N0bug9ln7VPLZjZzT812x7/Z8c9tpEt5WG5IslqKypsuZ2VE5i63IhJzU91NYSzilwadQt/I59R437N/87GHzmqVc2vSOE8ht/PAnZrRCLJHcjzE4psqCA2g'
+              'U7l0K10mt+vL2OYd/2a7Vu48kSWlfVtdkFdeUQSg1jasqL11AhJ3sflNzT3CoWkwUskYdb1P/+Yh/2aNMtVU0TUJTa35yB6oJAnorWlYLOdQQ+d9JWCox4OX'
+              'vWrenj9LzfXJc+8V/2YNoneUd5Nbe4m+5iD7qSojI3XaWCq2fBzU4khaSjU+rtspRauVpVrq0795+jdf+Td3fkfeCtlUNajs2rHYWFdbVcmXrI5SLAl5Z1U1'
+              'obqcoT5sAmvyvEyZ/s3Tv3n6N0//5unfPP2bp3/z79G/WZ1g1HrUx2gu7l88NO9e5bjIQyO1UDgZNUpumi73mptFweyHR18mvtVv6K08rY/fZ33MF+WpUb91'
+              'bWCRxIOegTUxnKhOuTpqjwX5mKIjHxCbNG1BwWAUufZpffyG9fH3Z0r8r38DTer/EQ=='
+          )
+
+
+          def require(condition, message):
+              if not condition:
+                  raise SystemExit(message)
+
+
+          def sha(raw):
+              return hashlib.sha256(raw).hexdigest()
+
+
+          def safe_env():
+              env = os.environ.copy()
+              for key in list(env):
+                  if key.startswith(('GIT_TRACE', 'GCM_TRACE', 'GIT_CONFIG_')) or key in {'GITHUB_TOKEN', 'GH_TOKEN', 'GITHUB_PAT'}:
+                      env.pop(key, None)
+              env.update(GIT_TERMINAL_PROMPT='0', GCM_INTERACTIVE='never', GIT_ASKPASS='', SSH_ASKPASS='')
+              return env
+
+
+          def git(*args, env=None):
+              result = subprocess.run(['git', '-c', 'credential.helper=', '-c', 'core.askPass=',
+                                       '-c', 'core.hooksPath=/dev/null', '-c', 'http.followRedirects=false', *args],
+                                      env=safe_env() if env is None else env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+              require(result.returncode == 0, 'Git operation failed (details withheld): ' + args[0])
+              return result.stdout
+
+
+          def tree(revision):
+              entries = {}
+              for raw in git('ls-tree', '-rz', revision).split(b'\0'):
+                  if not raw:
+                      continue
+                  metadata, path = raw.split(b'\t', 1)
+                  mode, kind, oid = metadata.decode('ascii').split()
+                  name = path.decode('utf-8')
+                  require(name not in entries and kind == 'blob' and mode == '100644', 'Git tree contains a nonregular or duplicate path')
+                  entries[name] = {'mode': mode, 'oid': oid}
+              return entries
+
+
+          def checked_path(name, managed=False):
+              path = pathlib.PurePosixPath(name)
+              require(name == path.as_posix() and not path.is_absolute() and '\\' not in name and '\x00' not in name, 'Noncanonical source path')
+              require(all(part not in {'', '.', '..', '.git'} and not part.endswith((' ', '.')) and not re.search(r'[<>:"|?*\x00-\x1f]', part) for part in path.parts), 'Unsafe source path')
+              reserved = {'con', 'prn', 'aux', 'nul'} | {f'com{i}' for i in range(1, 10)} | {f'lpt{i}' for i in range(1, 10)}
+              require(all(part.split('.')[0].casefold() not in reserved for part in path.parts), 'Windows-reserved source path')
+              if managed:
+                  require(not set(path.parts) & {'.github', '.wrangler', 'node_modules', '__pycache__', 'bin', 'obj', 'target', 'output'}, 'Private or executable setup directory in source manifest')
+                  require(path.suffix.lower() not in {'.exe', '.dll', '.pdb', '.fm', '.dmp', '.log', '.zip', '.pyc', '.pem', '.key'}, 'Forbidden source artifact')
+                  require(path.name not in {'.env', '.dev.vars', 'api.json', 'index.json', 'hosts.yml', 'credentials'}, 'Private source file')
+                  require(name not in {ARCHIVE, WORKFLOW}, 'Source collides with browser setup')
+              return path
+
+
+          def destination(root, name):
+              path = root.joinpath(*checked_path(name, managed=True).parts)
+              require(path.resolve().is_relative_to(root), 'Source destination escapes repository')
+              current = path
+              while current != root:
+                  require(not current.is_symlink(), 'Symlink in destination path')
+                  current = current.parent
+              return path
+
+
+          def main():
+              parser = argparse.ArgumentParser(description=__doc__)
+              parser.add_argument('--local-only', action='store_true', help='Offline fixture validation: local commit/tag only, no remote read or write')
+              args = parser.parse_args()
+              require(os.environ.get('GITHUB_REPOSITORY') == REPOSITORY and os.environ.get('GITHUB_REPOSITORY_OWNER') == OWNER, 'Wrong repository/owner')
+              require(os.environ.get('GITHUB_REF') == 'refs/heads/main' and os.environ.get('GITHUB_EVENT_NAME') == 'workflow_dispatch', 'Owner dispatch on main is required')
+              require(os.environ.get('GITHUB_ACTOR') == OWNER and os.environ.get('GITHUB_TRIGGERING_ACTOR') == OWNER, 'Only the repository owner may dispatch or rerun this import')
+              require(os.environ.get('GITHUB_WORKFLOW_REF') == REPOSITORY + '/' + WORKFLOW + '@refs/heads/main', 'Unexpected workflow identity')
+              # The ephemeral Actions token is read into memory only and removed before any Git child runs.
+              token = os.environ.pop('GITHUB_TOKEN', None)
+              packed = base64.b64decode(MANIFEST_DATA, validate=True)
+              public_data = zlib.decompress(packed)
+              require(len(public_data) < 200000 and sha(public_data) == MANIFEST_SHA, 'Public manifest checksum mismatch')
+              manifest = json.loads(public_data)
+              BASE_FILES, OLD, NEW = manifest['base'], manifest['old'], manifest['new']
+              require((len(BASE_FILES), len(OLD), len(NEW)) == (222, 216, 234), 'Manifest counts differ from review')
+              for name in BASE_FILES:
+                  checked_path(name)
+              for collection in (OLD, NEW):
+                  require(len({name.casefold() for name in collection}) == len(collection), 'Case-insensitive manifest collision')
+                  for name, digest in collection.items():
+                      checked_path(name, managed=True)
+                      require(re.fullmatch(r'[0-9a-f]{64}', digest) is not None, 'Invalid source digest')
+              root = pathlib.Path.cwd().resolve()
+              head = git('rev-parse', 'HEAD').decode().strip()
+              require(head == os.environ.get('GITHUB_SHA') == os.environ.get('GITHUB_WORKFLOW_SHA'), 'Main advanced since dispatch; review and dispatch again')
+              require(not git('status', '--porcelain'), 'Checkout must be clean')
+              git('merge-base', '--is-ancestor', BASE, head)
+              require(tree(BASE) == {n: {'mode': v['mode'], 'oid': v['oid']} for n, v in BASE_FILES.items()}, 'Reviewed base Git tree mismatch')
+              for name, value in BASE_FILES.items():
+                  require(sha(git('show', BASE + ':' + name)) == value['sha256'], 'Reviewed base file checksum mismatch: ' + name)
+              setup = {ARCHIVE, WORKFLOW}
+              current_tree = tree('HEAD')
+              require(set(current_tree) == set(BASE_FILES) | setup, 'Only the new archive and this workflow may be added to the reviewed base')
+              require(not setup & set(BASE_FILES), 'Setup paths already exist at reviewed base')
+              for name in BASE_FILES:
+                  require(current_tree[name] == tree_entry(BASE_FILES[name]), 'Reviewed base file changed in browser setup: ' + name)
+              # The browser first adds the ZIP, then adds this workflow. Later setup fixes may modify only this workflow.
+              commits = git('rev-list', '--reverse', BASE + '..HEAD').decode().splitlines()
+              require(len(commits) >= 2, 'Expected the separate archive and workflow browser commits')
+              previous = BASE
+              for position, commit in enumerate(commits):
+                  require(git('rev-list', '--parents', '-n', '1', commit).decode().split() == [commit, previous], 'Browser setup must be a linear sequence')
+                  status = git('diff', '--name-status', previous, commit).decode().splitlines()
+                  expected = ['A\t' + ARCHIVE] if position == 0 else (['A\t' + WORKFLOW] if position == 1 else ['M\t' + WORKFLOW])
+                  require(status == expected, 'After the ZIP/workflow browser commits, only this workflow may change')
+                  previous = commit
+              require(sha(git('show', commits[0] + ':' + ARCHIVE)) == ARCHIVE_SHA, 'The browser ZIP commit contains different archive bytes')
+              require(not git('tag', '--list', TAG), 'Version tag already exists locally')
+              if not args.local_only:
+                  remote = git('ls-remote', '--refs', ORIGIN, 'refs/heads/main', 'refs/tags/' + TAG).decode().splitlines()
+                  refs = {line.split()[1]: line.split()[0] for line in remote}
+                  require(refs.get('refs/heads/main') == head and 'refs/tags/' + TAG not in refs, 'Remote main changed or version tag already exists')
+                  require(bool(token), 'Missing ephemeral Actions token')
+              preserve = set(current_tree) - set(OLD)
+              require(not set(NEW) & preserve, 'Source would overwrite an unrelated public path')
+              for name, digest in OLD.items():
+                  require(name in BASE_FILES and BASE_FILES[name]['sha256'] == digest, 'Old managed file differs from reviewed base: ' + name)
+                  require(sha(git('show', 'HEAD:' + name)) == digest, 'Old managed file changed since review: ' + name)
+              archive = root / ARCHIVE
+              require(not archive.is_symlink() and archive.is_file() and archive.stat().st_size == ARCHIVE_BYTES and sha(archive.read_bytes()) == ARCHIVE_SHA, 'Source ZIP size/hash/type mismatch')
+              payload = {}
+              with zipfile.ZipFile(archive) as zipped:
+                  entries = zipped.infolist()
+                  require(len(entries) == len(NEW) and {entry.filename for entry in entries} == set(NEW), 'ZIP members differ from exact 234-file manifest')
+                  require(sum(entry.file_size for entry in entries) <= 32000000, 'Unexpected expanded ZIP size')
+                  for entry in entries:
+                      checked_path(entry.filename, managed=True)
+                      mode = entry.external_attr >> 16
+                      require(not entry.is_dir() and not entry.flag_bits & 1 and stat.S_IFMT(mode) in {0, stat.S_IFREG}, 'Nonregular, encrypted or symlink ZIP member')
+                      require(entry.file_size <= 25000000, 'Oversized source member')
+                      raw = zipped.read(entry)
+                      require(sha(raw) == NEW[entry.filename], 'ZIP member checksum mismatch: ' + entry.filename)
+                      destination(root, entry.filename)
+                      payload[entry.filename] = raw
+              added = set(NEW) - set(OLD)
+              modified = {name for name in set(NEW) & set(OLD) if NEW[name] != OLD[name]}
+              removed = set(OLD) - set(NEW)
+              require((len(added), len(modified), len(removed)) == (18, 35, 0), 'Reviewed source delta changed')
+              changed = added | modified | removed
+              for name in sorted(added | modified):
+                  target = destination(root, name)
+                  target.parent.mkdir(parents=True, exist_ok=True)
+                  target.write_bytes(payload[name])
+              for name in sorted(removed):
+                  destination(root, name).unlink()
+              git('add', '--', *sorted(changed))
+              require(set(git('diff', '--cached', '--name-only').decode().splitlines()) == changed, 'Unexpected staged paths')
+              for name, digest in NEW.items():
+                  require(sha(git('show', ':' + name)) == digest, 'Staged source checksum mismatch: ' + name)
+              for name in preserve:
+                  mode, oid, stage_and_name = git('ls-files', '--stage', '--', name).decode().split(maxsplit=2)
+                  require(mode == current_tree[name]['mode'] and oid == current_tree[name]['oid'] and stage_and_name.startswith('0\t'), 'Unrelated staged file changed: ' + name)
+              git('-c', 'user.name=github-actions[bot]', '-c', 'user.email=41898282+github-actions[bot]@users.noreply.github.com',
+                  '-c', 'commit.gpgsign=false', 'commit', '-m', 'Publish verified Touchline Editor 0.14.3 sources')
+              commit = git('rev-parse', 'HEAD').decode().strip()
+              require(git('rev-parse', 'HEAD^').decode().strip() == head and not git('status', '--porcelain'), 'Import commit is not a clean child of browser setup')
+              final_tree = tree('HEAD')
+              require(set(final_tree) == set(NEW) | preserve, 'Unexpected final tree paths')
+              for name in preserve:
+                  require(final_tree[name] == current_tree[name], 'Unrelated committed file changed: ' + name)
+              for name, digest in NEW.items():
+                  require(sha(git('show', 'HEAD:' + name)) == digest, 'Committed source checksum mismatch: ' + name)
+              git('tag', TAG, commit)
+              summary = {'version': VERSION, 'source_commit': commit, 'source_manifest_files': len(NEW), 'source_zip_sha256': ARCHIVE_SHA,
+                         'added': len(added), 'modified': len(modified), 'removed': len(removed), 'unrelated_and_setup_preserved': len(preserve),
+                         'tag': TAG, 'status': 'local_validation_only' if args.local_only else 'source_and_tag_published'}
+              if args.local_only:
+                  print(json.dumps(summary))
+                  return
+              push_env = safe_env()
+              push_env.update(GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='http.https://github.com/.extraheader',
+                              GIT_CONFIG_VALUE_0='AUTHORIZATION: basic ' + base64.b64encode(('x-access-token:' + token).encode()).decode())
+              try:
+                  # Ordinary atomic push: never force, never overwrite a tag, and never use a configured push URL.
+                  git('push', '--atomic', ORIGIN, 'HEAD:refs/heads/main', 'refs/tags/' + TAG, env=push_env)
+              finally:
+                  push_env.clear()
+                  token = None
+              refs = dict((line.split()[1], line.split()[0]) for line in git('ls-remote', '--refs', ORIGIN, 'refs/heads/main', 'refs/tags/' + TAG).decode().splitlines())
+              require(refs.get('refs/heads/main') == refs.get('refs/tags/' + TAG) == commit, 'Inspect remote publication; post-push ref verification did not match')
+              text = json.dumps(summary, indent=2)
+              if os.environ.get('GITHUB_STEP_SUMMARY'):
+                  pathlib.Path(os.environ['GITHUB_STEP_SUMMARY']).write_text('```json\n' + text + '\n```\n', encoding='utf-8')
+              print(text)
+
+
+          def tree_entry(value):
+              return {'mode': value['mode'], 'oid': value['oid']}
+
+
+          if __name__ == '__main__':
+              main()
+          PY
