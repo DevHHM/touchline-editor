@@ -4,6 +4,9 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, path::Path};
 mod search_conditions;
+mod shortlists;
+pub mod fm_shortlists;
+pub use shortlists::ShortlistAction;
 pub use search_conditions::SearchCondition;
 
 #[derive(Clone, Debug, Deserialize, Serialize, Default)]

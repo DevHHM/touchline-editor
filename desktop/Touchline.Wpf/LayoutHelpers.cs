@@ -28,7 +28,7 @@ public static class Typography
  private static void Configure(Window window)
  {
   window.FontFamily = AppFont;
-  window.FontWeight = FontWeights.Medium;
+  window.SetResourceReference(Control.FontWeightProperty, "AppBodyFontWeight");
   window.SetResourceReference(TextOptions.TextRenderingModeProperty, "AppTextRenderingMode");
   TextOptions.SetTextFormattingMode(window, TextFormattingMode.Display);
   window.UseLayoutRounding = true;

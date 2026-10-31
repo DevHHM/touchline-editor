@@ -17,6 +17,7 @@
     <Compile Include="../Touchline.Wpf/AbilityVisibility.cs" Link="AbilityVisibility.cs" />
     <Compile Include="../Touchline.Wpf/PositionOrder.cs" Link="PositionOrder.cs" />
     <Compile Include="../Touchline.Wpf/SearchCriteria.cs" Link="SearchCriteria.cs" />
+    <Compile Include="../Touchline.Wpf/RecentNavigationHistory.cs" Link="RecentNavigationHistory.cs" />
     <Compile Include="../Touchline.Wpf/SearchConditions.cs" Link="SearchConditions.cs" />
     <Compile Include="../Touchline.Wpf/LeagueBrowserModels.cs" Link="LeagueBrowserModels.cs" />
     <Compile Include="../Touchline.Wpf/SearchColumns.cs" Link="SearchColumns.cs" />
@@ -26,6 +27,7 @@
     <Compile Include="../Touchline.Wpf/ClubGrowthAvailability.cs" Link="ClubGrowthAvailability.cs" />
     <Compile Include="../Touchline.Wpf/PackagePaths.cs" Link="PackagePaths.cs" />
     <Compile Include="../Touchline.Wpf/DesktopWindowPreferences.cs" Link="DesktopWindowPreferences.cs" />
+    <Compile Include="../Touchline.Wpf/UiScalePreferences.cs" Link="UiScalePreferences.cs" />
     <Compile Include="../Touchline.Wpf/EditorShortcuts.cs" Link="EditorShortcuts.cs" />
   </ItemGroup>
 </Project>

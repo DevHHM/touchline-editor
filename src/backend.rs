@@ -1,11 +1,12 @@
 //! Build-scoped native registry adapter. Unknown or unverified layouts fail closed.
 use crate::{
-    memory::{self, Module, Process},
+    memory::{Module, Process},
     model::*,
 };
 use anyhow::{Context, Result, bail, ensure};
 use std::collections::{HashMap, HashSet};
 pub mod watch;
+pub(crate) mod discovery;
 
 pub mod profiles;
 /// Legacy default used by old snapshots/tests, not a global connection grant.
@@ -18,11 +19,16 @@ pub struct DetectedBuild {
     pub profile: Option<&'static profiles::BuildProfile>,
 }
 fn read_pe_identity(p: &Process, base: u64) -> Result<(u32,u32)> {
-    let dos=p.read(base,64)?;
+    read_pe_identity_with(base,|address,size|p.read(address,size))
+}
+fn read_pe_identity_with(base:u64, mut read:impl FnMut(u64,usize)->Result<Vec<u8>>)->Result<(u32,u32)> {
+    let dos=read(base,64)?;
+    ensure!(dos.len()==64,"FM 모듈 DOS 헤더 크기가 다릅니다");
     ensure!(word16(&dos,0)==0x5A4D,"FM 모듈 DOS 헤더가 다릅니다");
     let offset=word32(&dos,0x3c) as u64;
     ensure!((64..0x1000).contains(&offset),"지원하지 않는 FM PE 헤더 위치입니다");
-    let header=p.read(base+offset,84)?;
+    let header=read(base+offset,84)?;
+    ensure!(header.len()==84,"FM 모듈 PE 헤더 크기가 다릅니다");
     ensure!(word32(&header,0)==0x4550 && word16(&header,4)==0x8664 && word16(&header,24)==0x20B,
         "지원하지 않는 FM 모듈 형식입니다");
     Ok((word32(&header,8),word32(&header,80)))
@@ -30,10 +36,14 @@ fn read_pe_identity(p: &Process, base: u64) -> Result<(u32,u32)> {
 /// Bounded PE-header/code reads only; never follows game objects before the
 /// exact build and independently verified native signatures have passed.
 pub fn detect_build(p: &Process,m: &Module)->Result<DetectedBuild> {
-    let (timestamp,image_size)=read_pe_identity(p,m.base)?;
+    detect_build_with(m,|address,size|p.read(address,size))
+        .with_context(||discovery::module_context(&m.path))
+}
+fn detect_build_with(m:&Module,mut read:impl FnMut(u64,usize)->Result<Vec<u8>>)->Result<DetectedBuild> {
+    let (timestamp,image_size)=read_pe_identity_with(m.base,&mut read)?;
     ensure!(image_size==m.size,"FM 모듈 이미지 크기가 헤더와 다릅니다");
     let profile=profiles::identify(timestamp,image_size);
-    if let Some(profile)=profile {profile.verify_code_with(m.base,|address,size|p.read(address,size))?;}
+    if let Some(profile)=profile {profile.verify_code_with(m.base,read)?;}
     Ok(DetectedBuild{timestamp,image_size,profile})
 }
 fn require_read_profile(build:&DetectedBuild)->Result<&'static profiles::BuildProfile> {
@@ -59,6 +69,10 @@ pub fn registry(p: &Process, base: u64, db: u64) -> Result<(u64,u64)> {
 fn is_person_registry_type(name:&str)->bool {
     name.contains("PERSON") || name.contains("PLAYER") || name.contains("OFFICIAL")
         || name.contains("SUPPORT_STAFF") || name.contains("AGENT")
+        // FM27 RTTI: JOURNALIST -> ACTUAL_PERSON_BASE -> PERSON. Save
+        // progression can move one into a sampled registry slot. Accept only
+        // this verified name; unrelated/unknown records still fail closed.
+        || name == ".?AVJOURNALIST@db@@"
 }
 fn registry_with_layout(p:&Process,base:u64,db:u64,layout:&profiles::ReadLayout)->Result<(u64,u64)> {
     registry_with_reader(base,db,layout,|address,size|p.read(address,size))
@@ -514,19 +528,16 @@ fn cached_nationality(
 
 pub fn connect(progress: impl Fn(String)) -> Result<Index> {
     progress("실행 중인 Football Manager와 빌드를 확인하고 있습니다".into());
-    let candidates = memory::processes()?
-        .into_iter()
-        .filter(|(_, n)| n.eq_ignore_ascii_case("fm.exe"))
-        .collect::<Vec<_>>();
+    let candidates = discovery::candidates()?;
     ensure!(
         !candidates.is_empty(),
-        "Football Manager가 실행되지 않았습니다. 게임에서 세이브를 연 뒤 연결하세요"
+        "{}", discovery::LOCAL_GAME_GUIDANCE
     );
     let mut reasons = Vec::new();
-    for (pid, _) in candidates {
+    for (pid, name) in candidates {
         match connect_pid(pid, &progress) {
             Ok(index) => return Ok(index),
-            Err(e) => reasons.push(format!("PID {pid}: {e:#}")),
+            Err(e) => reasons.push(format!("{name} / PID {pid}: {e:#}")),
         }
     }
     bail!("FM 연결 실패\n{}", reasons.join("\n"))
@@ -541,7 +552,8 @@ pub(crate) fn connect_pid(pid: u32, progress: &impl Fn(String)) -> Result<Index>
         .find(|m| m.name.eq_ignore_ascii_case("game_plugin.dll"))
         .context("게임 데이터 모듈이 로드되지 않았습니다")?;
     let build=detect_build(&p,&m)?;
-    let profile=require_read_profile(&build)?; // No object reads before profile validation.
+    let profile=require_read_profile(&build)
+        .with_context(||discovery::module_context(&m.path))?; // No object reads before profile validation.
     let layout=profile.require_read_layout()?;
     let (stamp,size)=(build.timestamp,build.image_size);
     let db = p.u64(m.base + layout.database_rva)?;
@@ -1150,6 +1162,67 @@ pub fn detail(s: &Session, e: &Entity) -> Result<Detail> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn person_registry_accepts_fm27_person_rtti_families_including_journalists() {
+        // Concrete PERSON-derived types from the verified FM27 game_plugin.dll
+        // RTTI. A journalist at any connection/watch anchor must not make an
+        // otherwise valid save unconnectable.
+        for name in [
+            "HUMAN_NON_PLAYER", "CLIENT_PERSON", "PERSON", "BASIC_PERSON",
+            "ACTUAL_NON_PLAYER", "ACTUAL_PERSON", "ACTUAL_PERSON_BASE",
+            "RETIRED_PERSON_NAME_STRINGS", "RETIRED_PERSON_NAME_POINTERS",
+            "RETIRED_PERSON_REMOVED_FROM_GAME", "VIRTUAL_PLAYER", "PLAYER",
+            "ACTUAL_PLAYER", "AGENT", "JOURNALIST", "OFFICIAL",
+            "ACTUAL_PLAYER_AND_NON_PLAYER", "SUPPORT_STAFF",
+        ] {
+            let native_name=format!(".?AV{name}@db@@");
+            assert!(is_person_registry_type(&native_name), "rejected {native_name}");
+        }
+    }
+    #[test]
+    fn journalist_registry_fix_does_not_accept_unrelated_native_records() {
+        for native_name in [
+            "", ".?AVJOURNALIST@unverified@@", ".?AVJOURNALIST_EXTRA@db@@",
+            ".?AVREMOVED_RECORD@db@@", ".?AVFUTURE_REGEN@db@@",
+            ".?AVVIRTUAL_MANAGER@db@@", ".?AVCLUB@db@@",
+        ] {
+            assert!(!is_person_registry_type(native_name), "accepted {native_name}");
+        }
+    }
+    #[test]
+    fn unknown_store_build_reads_only_pe_headers_and_never_gets_a_layout() {
+        let module=Module {name:"game_plugin.dll".into(),base:0x180000000,size:0x12345000,
+            path:r"D:\XboxGames\Football Manager 27\Content\game_plugin.dll".into()};
+        let mut reads=Vec::new();
+        let build=detect_build_with(&module,|address,size| {
+            reads.push((address,size));
+            let mut bytes=vec![0;size];
+            match (address-module.base,size) {
+                (0,64)=>{
+                    bytes[0..2].copy_from_slice(&0x5A4Du16.to_le_bytes());
+                    bytes[0x3c..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+                },
+                (0x80,84)=>{
+                    bytes[0..4].copy_from_slice(&0x4550u32.to_le_bytes());
+                    bytes[4..6].copy_from_slice(&0x8664u16.to_le_bytes());
+                    bytes[8..12].copy_from_slice(&0x12345678u32.to_le_bytes());
+                    bytes[24..26].copy_from_slice(&0x20Bu16.to_le_bytes());
+                    bytes[80..84].copy_from_slice(&module.size.to_le_bytes());
+                },
+                _=>panic!("unknown build must not read code or game objects"),
+            }
+            Ok(bytes)
+        }).unwrap();
+        assert!(build.profile.is_none());
+        assert_eq!(reads,vec![(module.base,64),(module.base+0x80,84)]);
+        let error=require_read_profile(&build).unwrap_err()
+            .context(discovery::module_context(&module.path));
+        assert!(error.downcast_ref::<profiles::UnsupportedBuild>().is_some());
+        let reason=format!("{error:#}");
+        assert!(reason.contains("12345678/12345000") && reason.contains("PC Game Pass"));
+        assert!(!reason.contains(&module.path));
+    }
+
     fn registry_fixture(profile:&profiles::BuildProfile, mode:u8, direct:(u64,u64), indirect:(u64,u64))->HashMap<u64,Vec<u8>> {
         let layout=profile.require_read_layout().unwrap();
         let header=|(b,e):(u64,u64)|[b.to_le_bytes(),e.to_le_bytes()].concat();

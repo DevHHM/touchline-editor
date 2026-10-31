@@ -95,7 +95,7 @@ impl Bridge {
                 self.connection.candidate = None;
                 self.connection.preferred_pid = None;
                 self.connection.state = "waiting";
-                self.connection.reason = "FM 실행과 세이브 로드를 기다립니다".into();
+                self.connection.reason = crate::backend::discovery::LOCAL_GAME_GUIDANCE.into();
             }
         }
         self.connection_result(changed, date_changed, now)
@@ -359,7 +359,7 @@ mod tests {
             (Observation::Waiting("세이브 인물 목록이 비어 있습니다".into()), "loading", "세이브 인물 목록이 비어 있습니다"),
             (Observation::Error("FM 프로세스 접근 실패: os error 5".into()), "error", "FM 프로세스 접근 실패: os error 5"),
             (Observation::UnsupportedBuild("지원하지 않는 빌드 ABCD".into()), "unsupported_build", "지원하지 않는 빌드 ABCD"),
-            (Observation::Absent, "waiting", "FM 실행과 세이브 로드를 기다립니다"),
+            (Observation::Absent, "waiting", crate::backend::discovery::LOCAL_GAME_GUIDANCE),
         ] {
             let mut bridge = Bridge::default();
             bridge.connection.enabled = true;

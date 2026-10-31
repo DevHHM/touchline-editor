@@ -67,6 +67,52 @@ PowerShell의 따옴표 전달 문제를 피하려면 CLI 인수는 JSON 파일�
 python tools/touchline_api.py search --args-file output/api-search.json
 ```
 
+## 로컬 관심명단
+
+`library_get {}`로 `{lists, presets}` 저장본을 읽습니다. `shortlist_update`는
+`expected`에 그 저장본을, `change`에 변경 하나를 받습니다. 예:
+
+```json
+{
+  "expected": {"lists": [], "presets": []},
+  "change": {
+    "action": "create", "name": "후보",
+    "members": [{"kind": "Player", "id": 123}]
+  }
+}
+```
+
+동작은 `create(name,members)`, `rename(name,new_name)`, `delete(name)`,
+`add(name,members)`, `remove(name,members)`입니다. 응답은 변경 후 전체 라이브러리이며
+다음 작업의 `expected`로 사용합니다. 다른 창이 먼저 저장했다면 변경하지 않고
+충돌 오류를 반환합니다. 다시 읽어 사용자가 의도한 변경을 새로 구성하세요.
+`library_put {library,expected}`도 같은 비교를 지원합니다.
+
+최대 100개 명단, 명단당 10,000개 대상입니다. 종류+UID로 중복을 제거합니다.
+`resolve_targets {targets:[...]}`는 현재 인덱스의 `items`와 미확인 `missing`을
+반환하며 모호한 중복 UID도 미확인으로 남깁니다. 원본 메모리 주소는 반환하지 않습니다.
+
+`library_export {path,name}`은 선택한 명단만 새 JSON 파일로 내보냅니다.
+`name`을 생략하면 라이브러리 전체를 내보냅니다. 기존 파일 덮어쓰기는 지원하지 않습니다.
+`library_import {path}`는 파일을 검증하고 `{library,saved:false}`를 반환하며
+자동 저장하지 않습니다. **Touchline 로컬 파일이며 FM 내부 영입명단이나
+`.fmf`·`.slf` 파일은 아닙니다.** 이 명령들은 게임 메모리를 수정하지 않습니다.
+
+### FM27 파일 교환 (시험 지원)
+
+- `fm_shortlist_import {path}`: `.fmf`/`.slf`/`.ssf`를 검증해
+  `{library,saved:false,game_applied:false,format:"si_shortlist",compatibility:"fm27_runtime_unverified"}` 반환.
+  검토 후 `library_put`으로 기존 명단과 합쳐 저장할 수 있습니다.
+- `fm_shortlist_export {path,name,kind,expected}`: `kind`는 `Player` 또는 `Staff`.
+  저장된 해당 명단을 새 `.fmf` 파일로 내보냅니다. API는 종류에 맞는 `.slf`/`.ssf`도 지원합니다.
+  `expected`는 `library_get`에서 읽은 라이브러리입니다. 혼합 명단·오래된 저장본·기존 경로는 거부합니다.
+  응답의 `file_saved:true`는 파일 저장 완료이며 `game_applied:false`입니다.
+
+**사용자가 FM의 관심명단 불러오기로 파일을 열어야 합니다.** 정적 코드 및 파일 구조 검증과
+FM에서의 실제 가져오기 확인은 별개이며 후자는 아직 미검증입니다.
+게임 명단 생성·삭제·자동 동기화 API로 사용하지 마세요.
+상세 형식·근거·제한은 `reference/fm27-shortlist-files.md`를 참조하세요.
+
 ## 검토한 변경 적용
 
 일반 수치 변경은 `detail → preview → apply` 순서입니다. 첫 단계에서 받은 필드 키만 사용합니다. 미리보기 자체는 게임을 수정하지 않으며, 클라이언트가 자동으로 적용하지 않습니다.

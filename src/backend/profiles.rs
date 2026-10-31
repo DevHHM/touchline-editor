@@ -72,6 +72,15 @@ pub const FM27: BuildProfile = BuildProfile {
         CodeSignature {name:"current date accessor",rva:0x4A0114,bytes:&[0x8B,0x0D,0x5E,0xD2,0x20,0x05]},
         CodeSignature {name:"player current ability",rva:0x15D4F70,bytes:&[0x0F,0xB7,0x81,0x64,0x02,0x00,0x00,0xC3]},
         CodeSignature {name:"player potential ability",rva:0x15F7060,bytes:&[0x0F,0xB7,0x81,0x66,0x02,0x00,0x00,0xC3]},
+        // Independent native Pmor branch and exact byte store. The dispatch
+        // receiver is Player base + 0x288; [rbx - 0x1C] is base + 0x26C.
+        // See reference/fm27-compatibility/player-morale.json.
+        CodeSignature {name:"player morale base",rva:0x160B31C,
+            bytes:&[0x48,0x89,0xCB,0x48,0x8D,0xB9,0x78,0xFD,0xFF,0xFF]},
+        CodeSignature {name:"player morale dispatch",rva:0x160B556,
+            bytes:&[0x41,0x81,0xFF,0x72,0x6F,0x6D,0x50,0x0F,0x84,0x12,0x1C,0x00,0x00]},
+        CodeSignature {name:"player morale setter",rva:0x160D175,
+            bytes:&[0x48,0x8B,0x0E,0x48,0x8B,0x01,0x48,0x89,0xF2,0xFF,0x50,0x40,0x41,0xB6,0x01,0x48,0x89,0xF9,0x89,0xC2,0x41,0xB0,0x01,0xE8,0x0F,0xC2,0xFC,0xFF,0x88,0x43,0xE4,0xE9,0x05,0xE2,0xFF,0xFF]},
         CodeSignature {name:"staff current ability",rva:0x17E1541,bytes:&[0x0F,0xBF,0x73,0xDA]},
         CodeSignature {name:"staff potential ability",rva:0x17E04CB,bytes:&[0x0F,0xBF,0x73,0xDC]},
         // Independent FM27 property-dispatch evidence: reference/fm27-compatibility/league-navigation.json.
@@ -104,7 +113,7 @@ impl std::fmt::Display for UnsupportedBuild {
     fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result {
         match self.profile {
             Some(p)=>write!(f,"{} 감지됨: 이 빌드의 데이터 구조가 아직 검증되지 않아 조회·수정을 연결하지 않았습니다",p.label),
-            None=>write!(f,"지원하지 않는 FM 빌드입니다 ({:08X}/{:08X}). 이 빌드의 주소 검증이 먼저 필요합니다",self.timestamp,self.image_size),
+            None=>write!(f,"지원하지 않는 FM 빌드입니다 ({:08X}/{:08X}). PC Game Pass/Microsoft Store판도 별도 빌드 검증이 필요합니다. 오류의 빌드 코드와 구입처를 알려 주세요",self.timestamp,self.image_size),
         }
     }
 }
@@ -152,6 +161,19 @@ mod tests {
         }).is_ok());
         let error=FM27.verify_code_with(base,|_,n|Ok(vec![0;n])).unwrap_err();
         assert!(error.downcast_ref::<UnsupportedBuild>().is_some());
+    }
+    #[test]
+    fn morale_identity_or_store_mismatch_rejects_the_fm27_adapter() {
+        for changed in FM27.code_signatures.iter().filter(|s|s.name.starts_with("player morale")) {
+            let error=FM27.verify_code_with(0,|address,_| {
+                let signature=FM27.code_signatures.iter().find(|s|s.rva==address).unwrap();
+                let mut bytes=signature.bytes.to_vec();
+                if address==changed.rva { bytes[0]^=1; }
+                Ok(bytes)
+            }).unwrap_err();
+            assert!(error.downcast_ref::<UnsupportedBuild>().is_some());
+            assert!(format!("{error:#}").contains(changed.name));
+        }
     }
     #[test]
     fn session_capabilities_cannot_be_forged_by_label() {

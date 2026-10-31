@@ -35,6 +35,25 @@ internal static class DesktopUsabilityTests
    check(DesktopWindowPreferences.Load(path) == null, "window_corrupt_preferences_fall_back_without_startup_error");
   }
   finally { if (File.Exists(path)) File.Delete(path); if (Directory.Exists(directory)) Directory.Delete(directory); }
+  string scaleDirectory = Path.Combine(Path.GetTempPath(), "touchline-scale-test-" + Guid.NewGuid().ToString("N"));
+  string scalePath = Path.Combine(scaleDirectory, "ui-scale.json");
+  try
+  {
+   check(UiScalePreferences.Load(scalePath).Percent == 100, "ui_scale_first_run_defaults_to_100");
+   foreach (int percent in UiScalePreferences.Presets)
+   {
+    new UiScalePreferences { Percent = percent }.Save(scalePath);
+    check(UiScalePreferences.Load(scalePath).Percent == percent, $"ui_scale_persists_{percent}_across_reloads");
+   }
+   foreach (string invalid in new[] { "{broken", "null", "{\"Version\":99,\"Percent\":150}", "{\"Version\":1,\"Percent\":0}", "{\"Version\":1,\"Percent\":9999}" })
+   {
+    File.WriteAllText(scalePath, invalid);
+    check(UiScalePreferences.Load(scalePath).Percent == 100, "ui_scale_corrupt_or_unsupported_setting_uses_readable_default");
+   }
+   check(Directory.GetFiles(scaleDirectory, "*.tmp").Length == 0, "ui_scale_atomic_save_leaves_no_temporary_files");
+  }
+  finally { if (File.Exists(scalePath)) File.Delete(scalePath); if (Directory.Exists(scaleDirectory)) Directory.Delete(scaleDirectory); }
+  check(UiScalePreferences.Step(100, 1) == 110 && UiScalePreferences.Step(100, -1) == 90 && UiScalePreferences.Step(150, 1) == 150 && UiScalePreferences.Step(80, -1) == 80, "ui_scale_keyboard_steps_and_bounds");
   check(EditorShortcuts.Resolve("F", ShortcutModifiers.Control) == EditorShortcut.Search && EditorShortcuts.Resolve("F", ShortcutModifiers.Control | ShortcutModifiers.Shift) == EditorShortcut.SearchFilters, "shortcuts_quick_and_advanced_search_distinct");
   check(EditorShortcuts.Resolve("F5", ShortcutModifiers.None) == EditorShortcut.Refresh && EditorShortcuts.Resolve("R", ShortcutModifiers.Control) == EditorShortcut.Refresh, "shortcuts_both_refresh_keys");
   check(EditorShortcuts.Resolve("Left", ShortcutModifiers.Alt) == EditorShortcut.Back && EditorShortcuts.Resolve("Right", ShortcutModifiers.Alt) == EditorShortcut.Forward, "shortcuts_profile_history_navigation");

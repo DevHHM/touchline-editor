@@ -18,5 +18,5 @@ public static class EditorShortcuts
   _ => EditorShortcut.None
  };
 
- public const string HelpText = "Ctrl+F  이름·UID 검색으로 이동\nCtrl+Shift+F  검색·필터 화면\nF5 / Ctrl+R  현재 정보 새로 읽기\nAlt+← / Alt+→  이전·다음 프로필\nCtrl+S  변경 검토 열기\nF1  단축키 안내\n\n변경 검토 후 적용 버튼을 눌러야 게임에 반영됩니다.\n창 위치·크기와 목록 너비는 다음 실행에도 유지됩니다.";
+ public const string HelpText = "Ctrl+F  이름·UID 검색으로 이동\nCtrl+Shift+F  검색·필터 화면\nF5 / Ctrl+R  현재 정보 새로 읽기\nAlt+← / Alt+→  이전·다음 프로필\nCtrl+S  변경 검토 열기\nF1  단축키 안내\nCtrl + / Ctrl −  화면 확대 / 축소\nCtrl+0  기본 화면 크기 (100%)\n\n변경 검토 후 적용 버튼을 눌러야 게임에 반영됩니다.\n화면 배율·창 위치·크기와 목록 너비는 다음 실행에도 유지됩니다.";
 }

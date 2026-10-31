@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Touchline.Wpf/Touchline.Wpf.csproj" />
+    <Resource Include="../../assets/icons/touchline.ico" Link="Icons/touchline.ico" />
+    <Resource Include="../../assets/icons/touchline.png" Link="Icons/touchline.png" />
+    <Resource Include="../../assets/fonts/Pretendard-*.otf" Link="Fonts/%(Filename)%(Extension)" />
+  </ItemGroup>
+</Project>

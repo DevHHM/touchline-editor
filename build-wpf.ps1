@@ -106,7 +106,7 @@ try {
     & (Join-Path $projectRoot 'tools\build-launcher.ps1') -OutputDirectory $packageDir -Version $packageVersion
     Copy-RequiredFile (Join-Path $projectRoot 'distribution\README.txt') (Join-Path $packageDir 'README.txt')
     Copy-RequiredFile (Join-Path $projectRoot 'distribution\diagnostics-collector.json') (Join-Path $appDir 'diagnostics-collector.json')
-    foreach ($name in @('QUICKSTART.ko.md', 'SUPPORT.ko.md', 'VERIFICATION.ko.md', 'UPDATES.ko.md', 'DIAGNOSTICS.ko.md', 'Verify-Package.ps1')) {
+    foreach ($name in @('QUICKSTART.ko.md', 'SUPPORT.ko.md', 'VERIFICATION.ko.md', 'UPDATES.ko.md', 'DIAGNOSTICS.ko.md', 'SHORTLISTS.ko.md', 'Verify-Package.ps1')) {
         Copy-RequiredFile (Join-Path $projectRoot "distribution\$name") (Join-Path $docsDir $name)
     }
     $releaseNotes = Join-Path $projectRoot "distribution\RELEASE-$packageVersion.ko.md"

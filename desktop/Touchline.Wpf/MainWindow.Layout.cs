@@ -12,6 +12,7 @@ public partial class MainWindow
 {
  private double _automaticListWidth = 294;
  private static string TextRenderingSettingsPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TouchlineEditor", "text-rendering.json");
+ private static string TextWeightSettingsPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TouchlineEditor", "text-weight.json");
 
  private void LoadTextRenderingPreference()
  {
@@ -23,6 +24,36 @@ public partial class MainWindow
   }
   catch (Exception error) when (error is IOException or JsonException or UnauthorizedAccessException) { App.Log(error); }
   SetTextRenderingMode(mode);
+  bool strong = false;
+  try
+  {
+   if (_qaOutput == null && File.Exists(TextWeightSettingsPath))
+    strong = JsonSerializer.Deserialize<bool>(File.ReadAllText(TextWeightSettingsPath));
+  }
+  catch (Exception error) when (error is IOException or JsonException or UnauthorizedAccessException) { App.Log(error); }
+  SetStrongText(strong);
+ }
+
+ private void SetStrongText(bool strong)
+ {
+  Application.Current.Resources["AppBodyFontWeight"] = strong ? FontWeights.SemiBold : FontWeights.Medium;
+  StrongTextOption.IsChecked = strong;
+ }
+
+ private void StrongTextOption_Click(object sender, RoutedEventArgs args)
+ {
+  bool strong = StrongTextOption.IsChecked;
+  SetStrongText(strong);
+  try
+  {
+   if (_qaOutput == null)
+   {
+    Directory.CreateDirectory(Path.GetDirectoryName(TextWeightSettingsPath)!);
+    File.WriteAllText(TextWeightSettingsPath, JsonSerializer.Serialize(strong));
+   }
+  }
+  catch (Exception error) when (error is IOException or UnauthorizedAccessException) { App.Log(error); }
+  Status(strong ? "본문 글자를 두껍게 표시합니다. Aa에서 언제든 바꿀 수 있습니다." : "본문 글자를 기본 두께로 표시합니다.");
  }
 
  private void SetTextRenderingMode(TextRenderingMode mode)
@@ -58,21 +89,45 @@ public partial class MainWindow
  {
   Typography.Initialize(this);
   LoadTextRenderingPreference();
+  foreach (int percent in UiScalePreferences.Presets)
+  {
+   var item = new MenuItem { Header = percent == 100 ? "100% · 기본 크기" : $"{percent}%", Tag = percent, IsCheckable = true };
+   item.Click += (_, _) =>
+   {
+    bool saved = UiScale.Set(percent);
+    Status($"화면 크기 {percent}% · 글자와 버튼에 적용" + (saved ? " · 자동 저장됨" : " · 설정을 저장하지 못했습니다"));
+   };
+   UiScaleOptions.Items.Add(item);
+  }
+  UiScale.Changed += RefreshUiScaleMenu;
+  Closed += (_, _) => UiScale.Changed -= RefreshUiScaleMenu;
+  RefreshUiScaleMenu();
+  WorkspaceViewport.SizeChanged += (_, _) => ApplyResponsiveShell();
   SizeChanged += (_, _) => ApplyResponsiveShell();
   Loaded += (_, _) => ApplyResponsiveShell();
  }
 
+ private void RefreshUiScaleMenu()
+ {
+  UiScaleButton.Content = $"화면 {UiScale.Percent}%";
+  foreach (MenuItem item in UiScaleOptions.Items) item.IsChecked = Equals(item.Tag, UiScale.Percent);
+  Dispatcher.BeginInvoke(() => { UpdateLayout(); ApplyResponsiveShell(); });
+ }
+
+ private void ResetUiScale_Click(object sender, RoutedEventArgs args) => UiScale.Set(100);
+
  private void ApplyResponsiveShell()
  {
-  if (ActualWidth <= 0 || ContentColumns.ActualWidth <= 0) return;
-  bool compact = ActualWidth < 1280;
+  if (WorkspaceShell.ActualWidth <= 0 || ContentColumns.ActualWidth <= 0) return;
+  double logicalWidth = WorkspaceShell.ActualWidth;
+  bool compact = logicalWidth < 1280;
   SidebarColumn.Width = TitleSidebarColumn.Width = new GridLength(194);
   double wantedListWidth = compact ? 260 : 294;
   // Preserve a manually dragged divider, while keeping enough room for editable detail cards.
   if (_preferredListWidth == null && EntityListColumn.Width.IsAbsolute && Math.Abs(EntityListColumn.Width.Value - _automaticListWidth) < 1)
    EntityListColumn.Width = new GridLength(wantedListWidth);
   _automaticListWidth = wantedListWidth;
-  EntityListColumn.MaxWidth = Math.Max(EntityListColumn.MinWidth, Math.Min(420, ActualWidth - SidebarColumn.Width.Value - 5 - DetailColumn.MinWidth));
+  EntityListColumn.MaxWidth = Math.Max(EntityListColumn.MinWidth, Math.Min(420, logicalWidth - SidebarColumn.Width.Value - 5 - DetailColumn.MinWidth));
   if (_preferredListWidth is double preferredWidth)
    EntityListColumn.Width = new GridLength(Math.Min(preferredWidth, EntityListColumn.MaxWidth));
   if (EntityListColumn.ActualWidth > EntityListColumn.MaxWidth)

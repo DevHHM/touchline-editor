@@ -37,7 +37,7 @@ fn run() -> Result<i32, String> {
         return Ok(if absent.is_empty() { 0 } else { 2 });
     }
     if !absent.is_empty() {
-        return Err(format!("배포 파일이 누락되었습니다. ZIP 전체를 새 폴더에 압축 해제하세요.\n\n{}", absent.join("\n")));
+        return Err(format!("배포 파일이 누락되었습니다. ZIP 전체를 새 폴더에 압축 해제하세요.\n\n보안 프로그램이 실행 파일을 격리했을 수도 있습니다. Windows 보안의 보호 기록과 다운로드한 파일의 출처를 확인하세요. 보안 기능을 끌 필요는 없습니다.\n\n누락된 파일:\n{}", absent.join("\n")));
     }
     // Preserve the caller's working directory so relative --snapshot/--ui-check
     // paths remain correct. Executable and engine resolution never depend on it.

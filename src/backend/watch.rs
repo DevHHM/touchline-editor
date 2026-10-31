@@ -70,7 +70,7 @@ fn probe_pid(pid: u32) -> Result<Ready> {
         .find(|m| m.name.eq_ignore_ascii_case("game_plugin.dll"))
         .ok_or_else(|| anyhow::anyhow!(NotReady("게임 데이터 모듈이 아직 없습니다. FM 시작이 완료될 때까지 기다려 주세요")))?;
     let build=detect_build(&process,&module)?;
-    let profile=require_read_profile(&build)?;
+    let profile=require_read_profile(&build).with_context(||discovery::module_context(&module.path))?;
     let layout=profile.require_read_layout()?;
     let (stamp,size)=(build.timestamp,build.image_size);
     let created = process.created()?;
@@ -127,8 +127,8 @@ fn error_observation(error:anyhow::Error)->Observation {
 /// Prefer the attached FM process while it exists; never silently select a
 /// different game just because the attached process is loading its save.
 pub fn probe(preferred_pid: Option<u32>) -> Observation {
-    let candidates = match memory::processes() {
-        Ok(items) => items.into_iter().filter(|(_, name)| name.eq_ignore_ascii_case("fm.exe"))
+    let candidates = match discovery::candidates() {
+        Ok(items) => items.into_iter()
             .map(|(pid, _)| pid).filter(|pid| !is_exited(*pid)).collect::<Vec<_>>(),
         Err(error) => return Observation::Error(format!("FM 프로세스 상태를 확인하지 못했습니다: {error:#}")),
     };
@@ -172,6 +172,13 @@ mod tests {
             image_size:profiles::FM27.image_size,profile:Some(&profiles::FM27)});
         assert!(matches!(error_observation(error),Observation::UnsupportedBuild(_)));
         assert!(matches!(error_observation(anyhow::anyhow!(NotReady("세이브 로드 중"))),Observation::Waiting(_)));
+        let error=anyhow::anyhow!(profiles::UnsupportedBuild {
+            timestamp:0x12345678,image_size:0x12345000,profile:None})
+            .context(discovery::module_context(r"D:\XboxGames\Football Manager 27\Content\game_plugin.dll"));
+        let Observation::UnsupportedBuild(reason)=error_observation(error) else {
+            panic!("store-path context must retain unsupported-build classification")
+        };
+        assert!(reason.contains("12345678/12345000") && reason.contains("XboxGames/WindowsApps"));
     }
     #[test]
     fn access_and_validation_errors_are_not_loading_and_keep_the_error_chain() {

@@ -238,18 +238,19 @@ pub fn populate(p: &Process, d: &mut Detail, legacy: bool) -> Result<()> {
     }
     match d.entity.kind {
         EntityKind::Player => {
-            // Player.Morale is a direct unscaled byte in the supported 26.3.2
-            // player layout, separate from person personality and club morale.
+            // Player.Morale is an unscaled byte, independently verified in the
+            // FM26 managed accessor and FM27 native Pmor property setter.
             // Unknown/sentinel values disable this optional field, not the profile.
-            // See reference/player-morale-field-20261029.json.
-            if legacy { match scalar(
+            // See reference/fm27-compatibility/player-morale.json and
+            // reference/player-morale-field-20261029.json.
+            match scalar(
                 p, "morale", "사기", "현재 상태", base + 0x26C,
                 Storage::U8, 1., 0., 20., 1.,
                 "현재 선수 사기 0–20입니다. 경기·대화·구단 상황에 따라 다시 변하며 불만 사유를 삭제하거나 값을 고정하지 않습니다",
             ) {
                 Ok(field) => d.fields.push(field),
                 Err(_) => d.notes.push("선수 사기가 검증 범위를 벗어나 이 항목의 편집을 비활성화했습니다".into()),
-            } }
+            }
             d.fields.push(scalar(
                 p,
                 "ca",

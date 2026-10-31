@@ -508,15 +508,49 @@ impl Bridge {
             "library_put" => {
                 let library: Library =
                     serde_json::from_value(a.get("library").cloned().context("목록 자료 없음")?)?;
+                if let Some(expected) = a.get("expected") {
+                    Library::read(&transaction::data_dir().join("scouting-library.json"))?
+                        .ensure_expected(&serde_json::from_value(expected.clone())?)?;
+                }
                 library.write(&transaction::data_dir().join("scouting-library.json"))?;
                 Ok(serde_json::to_value(library)?)
+            }
+            "shortlist_update" => {
+                let path = transaction::data_dir().join("scouting-library.json");
+                let library = Library::read(&path)?;
+                let expected: Library = serde_json::from_value(a.get("expected").cloned().context("기존 명단 정보 없음")?)?;
+                library.ensure_expected(&expected)?;
+                let action: crate::workspace::ShortlistAction = serde_json::from_value(a.get("change").cloned().context("명단 변경 내용 없음")?)?;
+                let next = library.update_shortlist(action)?;
+                next.write(&path)?;
+                Ok(serde_json::to_value(next)?)
             }
             "library_import" => {
                 let incoming = Library::read(Path::new(required_str(a, "path")?))?;
                 Ok(json!({"library":incoming,"saved":false}))
             }
+            "fm_shortlist_import" => {
+                let path = Path::new(required_str(a, "path")?);
+                let incoming = crate::workspace::fm_shortlists::read(path)?;
+                Ok(json!({"library":incoming,"saved":false,"game_applied":false,
+                    "format":"si_shortlist","compatibility":"fm27_runtime_unverified"}))
+            }
+            "fm_shortlist_export" => {
+                let library = Library::read(&transaction::data_dir().join("scouting-library.json"))?;
+                let expected: Library = serde_json::from_value(a.get("expected").cloned().context("기존 명단 정보 없음")?)?;
+                library.ensure_expected(&expected)?;
+                let selected = library.export_shortlist(required_str(a, "name")?)?;
+                let kind: EntityKind = serde_json::from_value(a.get("kind").cloned().context("선수 또는 스태프 명단 종류를 선택하세요")?)?;
+                let path = PathBuf::from(required_str(a, "path")?);
+                crate::workspace::fm_shortlists::export(&path, &selected.lists[0], kind)?;
+                Ok(json!({"path":path,"name":selected.lists[0].name,"kind":kind,
+                    "count":selected.lists[0].members.len(),"file_saved":true,"game_applied":false,
+                    "compatibility":"fm27_runtime_unverified",
+                    "next_step":"FM의 해당 선수/스태프 관심명단에서 파일 불러오기가 필요합니다. FM27 실제 불러오기는 아직 검증되지 않았습니다."}))
+            }
             "library_export" => {
-                let l = Library::read(&transaction::data_dir().join("scouting-library.json"))?;
+                let mut l = Library::read(&transaction::data_dir().join("scouting-library.json"))?;
+                if let Some(name) = a.get("name").and_then(|v| v.as_str()) { l = l.export_shortlist(name)?; }
                 let path = PathBuf::from(required_str(a, "path")?);
                 ensure!(!path.exists(), "새 파일 경로를 선택하세요");
                 l.write(&path)?;
@@ -526,12 +560,23 @@ impl Bridge {
                 let refs: Vec<Ref> =
                     serde_json::from_value(a.get("targets").cloned().context("대상 없음")?)?;
                 ensure!(refs.len() <= 10000, "대상이 너무 많습니다");
+                // Resolve the index once, rather than scanning every player for
+                // each member of a large shortlist. Ambiguous identities remain
+                // unresolved, just as with find().
+                let wanted = refs.iter().map(|r| (r.kind, r.id)).collect::<std::collections::HashSet<_>>();
+                let mut indexed = HashMap::<(EntityKind, u32), Option<&Entity>>::new();
+                for e in &self.index()?.entities {
+                    let key = (e.kind, e.id);
+                    if wanted.contains(&key) {
+                        indexed.entry(key).and_modify(|value| *value = None).or_insert(Some(e));
+                    }
+                }
                 let mut found = vec![];
                 let mut missing = vec![];
                 for r in refs {
-                    match self.find(r.kind, r.id) {
-                        Ok(e) => found.push(entity(&e)),
-                        Err(_) => missing.push(json!(r)),
+                    match indexed.get(&(r.kind, r.id)).copied().flatten() {
+                        Some(e) => found.push(entity(e)),
+                        None => missing.push(json!(r)),
                     }
                 }
                 Ok(json!({"items":found,"missing":missing}))
@@ -870,6 +915,25 @@ mod tests {
     }
     fn args(ids: &[u32]) -> Value {
         json!({"targets":ids.iter().map(|id|json!({"kind":"Player","id":id})).collect::<Vec<_>>(),"rules":[{"key":"ca","operation":"set","value":100}]})
+    }
+    #[test]
+    fn shortlist_resolution_preserves_order_kind_and_ambiguous_identity() {
+        let mut f = fixture();
+        let index = f.bridge.index.as_mut().unwrap();
+        let duplicate = index.entities[0].clone();
+        let mut staff = duplicate.clone();
+        staff.kind = EntityKind::Staff;
+        index.entities.extend([duplicate, staff]);
+        let result = f.bridge.dispatch("resolve_targets", &json!({"targets":[
+            {"kind":"Staff","id":7}, {"kind":"Player","id":8},
+            {"kind":"Player","id":7}, {"kind":"Player","id":99}
+        ]})).unwrap();
+        assert_eq!(result["items"].as_array().unwrap().len(), 2);
+        assert_eq!(result["items"][0]["kind"], "Staff");
+        assert_eq!(result["items"][0]["id"], 7);
+        assert_eq!(result["items"][1]["id"], 8);
+        assert_eq!(result["missing"], json!([{"kind":"Player","id":7},{"kind":"Player","id":99}]));
+        assert!(result["items"][0].get("address").is_none());
     }
     #[test]
     fn leagues_catalog_bridge_is_address_free_and_snapshot_refresh_never_reads_process() {

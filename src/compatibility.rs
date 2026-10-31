@@ -43,7 +43,7 @@ pub fn allowed_fm27_field(kind: EntityKind, key: &str) -> bool {
     }
     match kind {
         EntityKind::Player => listed(
-            "ca pa height home_reputation current_reputation world_reputation
+            "ca pa height morale home_reputation current_reputation world_reputation
             crossing dribbling finishing heading long_shots marking off_ball passing penalties tackling vision
             handling aerial_reach command_of_area communication kicking throwing anticipation decisions one_on_ones
             positioning reflexes first_touch technique left_foot right_foot flair corners teamwork work_rate long_throws
@@ -111,7 +111,11 @@ mod tests {
         assert!(!allowed_fm27_field(EntityKind::Staff,"passing"));
         assert!(allowed_fm27_field(EntityKind::Staff,"staff_youth"));
         assert!(!allowed_fm27_field(EntityKind::Player,"staff_youth"));
-        for key in ["trait_1","morale","retire_after_current_club","contract.wage","staff_buying_players","future_field"] {
+        assert!(allowed_fm27_field(EntityKind::Player,"morale"));
+        for kind in [EntityKind::Staff, EntityKind::Club, EntityKind::City, EntityKind::Person] {
+            assert!(!allowed_fm27_field(kind,"morale"));
+        }
+        for key in ["trait_1","player.injured","player.banned","team_cohesion","retire_after_current_club","contract.wage","staff_buying_players","future_field"] {
             for kind in EntityKind::ALL { assert!(!allowed_fm27_field(kind,key)); }
         }
         assert!(!allowed_fm27_field(EntityKind::Club,"club.sugar_daddy"));

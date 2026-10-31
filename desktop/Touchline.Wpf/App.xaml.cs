@@ -9,6 +9,7 @@ public partial class App : Application
   base.OnStartup(e); Arguments=e.Args;
   string logDirectory = Arg("--ui-check") is { } qa ? Path.Combine(Path.GetDirectoryName(Path.GetFullPath(qa))!, "diagnostic-logs") : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TouchlineEditor", "Logs");
   DiagnosticsLog.Current = new DiagnosticsLog(logDirectory, typeof(App).Assembly.GetName().Version?.ToString(3) ?? "unknown");
+  UiScale.Initialize();
   if(Arg("--ui-check") == null) AbilityVisibility.Current.Load(AbilityVisibility.DefaultPath);
   if(Arg("--ui-check") == null) DiagnosticSharing.Start(DiagnosticsConsentPrompt.AskAsync);
   if (Arg("--ui-check") is not null && Arg("--qa-offscreen") == "true")

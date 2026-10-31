@@ -20,11 +20,27 @@ public partial class MainWindow
   // Automated renders must not move onto a user's display or persist their off-screen position.
   if (_qaOutput != null) return;
   var preferences = DesktopWindowPreferences.Load(WindowPreferencesPath);
+  SourceInitialized += (_, _) => FitInitialWindowToWorkArea();
   if (preferences == null) return;
   _preferredListWidth = preferences.ValidListWidth;
   if (_preferredListWidth is double width) EntityListColumn.Width = new GridLength(width);
   WindowStartupLocation = WindowStartupLocation.Manual;
   SourceInitialized += (_, _) => RestoreDesktopWindow(preferences);
+ }
+
+ private void FitInitialWindowToWorkArea()
+ {
+  try
+  {
+   var monitors = ConnectedMonitors();
+   if (monitors.Count == 0) return;
+   var monitor = new DesktopWindowPreferences { NormalBounds = new(0, 0, Width, Height) }.SelectMonitor(monitors);
+   MinWidth = Math.Min(MinWidth, monitor.WorkArea.Width / monitor.Scale);
+   MinHeight = Math.Min(MinHeight, monitor.WorkArea.Height / monitor.Scale);
+   Width = Math.Min(Width, monitor.WorkArea.Width / monitor.Scale);
+   Height = Math.Min(Height, monitor.WorkArea.Height / monitor.Scale);
+  }
+  catch (Exception error) when (error is Win32Exception or ArgumentException) { App.Log(error); }
  }
 
  private void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)

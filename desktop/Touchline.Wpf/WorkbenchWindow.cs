@@ -53,6 +53,7 @@ public sealed class WorkbenchWindow : Window
  private int _resultVersion;
  private Button _searchButton = null!, _cancelButton = null!, _batchApply = null!, _freezeEnable = null!, _freezeStop = null!, _undo = null!;
  private WorkbenchLibrary _library = new();
+ private JsonElement _libraryBaseline;
  private CancellationTokenSource? _queryCancellation;
  private ulong? _activeQueryId;
  private TaskCompletionSource? _actionFinished, _queryFinished;
@@ -178,7 +179,7 @@ public sealed class WorkbenchWindow : Window
   return result;
  }
  private async Task RunAsync(Func<Task> action, bool allowDisconnected = false) { if (_busy || _closing || _stopping || (_connectionInvalidated && !allowDisconnected)) return; int version = _resultVersion; _busy = true; var completed = _actionFinished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously); _kind.IsEnabled = _lists.IsEnabled = _presets.IsEnabled = false; UpdateActions(); try { await action(); } catch (OperationCanceledException) { if (!_connectionInvalidated && version == _resultVersion) _status.Text = "검색 중지됨 · 완료된 결과는 유지됩니다"; } catch (Exception error) { App.Log(error); _status.Text = error.Message; } finally { _busy = false; _kind.IsEnabled = _lists.IsEnabled = _presets.IsEnabled = !_stopping && !_connectionInvalidated; UpdateActions(); completed.TrySetResult(); } }
- private async Task InitializeAsync() { _library = Read<WorkbenchLibrary>(await CallAsync("library_get")); RefreshLibrary(); await ResolveListAsync(); await LoadCatalogAsync(); await LoadHistoryAsync(); var freeze = await CallAsync("freeze_status"); ShowFreezeStatus(freeze); _status.Text = _live ? "준비됨 · 게임 적용은 변경 검토 후 가능합니다" : "준비됨 · 스냅샷은 게임에 적용할 수 없습니다"; }
+ private async Task InitializeAsync() { _libraryBaseline = await CallAsync("library_get"); _library = Read<WorkbenchLibrary>(_libraryBaseline); RefreshLibrary(); await ResolveListAsync(); await LoadCatalogAsync(); await LoadHistoryAsync(); var freeze = await CallAsync("freeze_status"); ShowFreezeStatus(freeze); _status.Text = _live ? "준비됨 · 게임 적용은 변경 검토 후 가능합니다" : "준비됨 · 스냅샷은 게임에 적용할 수 없습니다"; }
 
  private void BuildSearch()
  {
@@ -301,15 +302,35 @@ public sealed class WorkbenchWindow : Window
   var dock = new DockPanel(); dock.Children.Add(Docked(_libraryStatus, Dock.Top));
   dock.Children.Add(Docked(Bar(Labeled("관심명단", _lists), Labeled("명단 이름", _listName)), Dock.Top));
   dock.Children.Add(Docked(Bar(Button("새 명단", () => { string name = RequiredName(_listName.Text); if (_library.Lists.Any(list => list.Name.Equals(name, StringComparison.OrdinalIgnoreCase))) throw new InvalidOperationException("같은 이름의 명단이 있습니다"); var list = new WorkbenchShortlist { Name = name }; _library.Lists.Add(list); MarkLibraryChanged(); RefreshLibrary(list); return Task.CompletedTask; }), Button("이름 변경", () => { SelectedList().Name = RequiredName(_listName.Text); MarkLibraryChanged(); RefreshLibrary(); return Task.CompletedTask; }), Button("명단 삭제", () => { _library.Lists.Remove(SelectedList()); MarkLibraryChanged(); RefreshLibrary(); return Task.CompletedTask; }), Button("작업 대상 추가", () => { var list = SelectedList(); list.Members = list.Members.Concat(Targets()).Distinct().ToList(); MarkLibraryChanged(); return ResolveListAsync(); }), Button("선택 제거", () => { var list = SelectedList(); var identities = _listGrid.SelectedItems.Cast<EntityRecord>().Select(entity => new WorkbenchRef(entity.Kind, entity.Id)).ToHashSet(); list.Members.RemoveAll(identities.Contains); MarkLibraryChanged(); return ResolveListAsync(); })), Dock.Top));
-  dock.Children.Add(Docked(Bar(Button("명단 다시 확인", ResolveListAsync), Button("미확인 대상 제거", RemoveMissingAsync), Button("선택을 작업 대상에 추가", () => { AddTargets(_listGrid.SelectedItems.Cast<EntityRecord>()); return Task.CompletedTask; }), Button("라이브러리 저장", SaveLibraryAsync, true), Button("가져오기", ImportLibraryAsync), Button("저장된 라이브러리 내보내기", ExportLibraryAsync)), Dock.Top));
+  dock.Children.Add(Docked(Bar(Button("명단 다시 확인", ResolveListAsync), Button("미확인 대상 제거", RemoveMissingAsync), Button("선택을 작업 대상에 추가", () => { AddTargets(_listGrid.SelectedItems.Cast<EntityRecord>()); return Task.CompletedTask; }), Button("라이브러리 저장", SaveLibraryAsync, true), Button("저장본 다시 읽기", ReloadLibraryAsync), Button("가져오기", ImportLibraryAsync), Button("저장된 라이브러리 내보내기", ExportLibraryAsync)), Dock.Top));
+  dock.Children.Add(Docked(Bar(Button("FM 명단 관리 · 가져오기/내보내기", OpenFmShortlistAsync, true)), Dock.Top));
   _lists.SelectionChanged += async (_, _) => { if (_lists.SelectedItem is WorkbenchShortlist list) _listName.Text = list.Name; if (IsLoaded && !_busy) await RunAsync(ResolveListAsync); }; _listGrid.MouseDoubleClick += (_, _) => OpenFrom(_listGrid); dock.Children.Add(_listGrid); Tab("관심명단", dock);
+ }
+ private async Task OpenFmShortlistAsync()
+ {
+  if (_libraryDirty) throw new InvalidOperationException("작성 중인 명단·프리셋을 먼저 ‘라이브러리 저장’으로 저장하세요.");
+  int version = _resultVersion;
+  var dialog = new ShortlistWindow(_bridge, _connectionInvalidated ? [] : _targets.ToArray(), []) { Owner = this };
+  dialog.ShowDialog();
+  if (_closing) return;
+  var saved = await _bridge.CallAsync("library_get"); _libraryBaseline = saved; _library = Read<WorkbenchLibrary>(saved);
+  RefreshLibrary(); if (!_connectionInvalidated) await ResolveListAsync();
+  _libraryStatus.Text = "FM 파일을 내보낸 뒤 게임의 관심명단 불러오기로 반영하세요. 앱 명단은 별도로 보관됩니다.";
+  if (!_connectionInvalidated && version == _resultVersion && dialog.ProfileToOpen is { } entity) _open(entity);
  }
  private static string RequiredName(string name) { name = name.Trim(); if (name.Length is < 1 or > 80 || name.Any(char.IsControl)) throw new InvalidOperationException("이름은 1–80자로 입력하세요"); return name; }
  private WorkbenchShortlist SelectedList() => _lists.SelectedItem as WorkbenchShortlist ?? throw new InvalidOperationException("관심명단을 선택하세요");
  private void RefreshLibrary(WorkbenchShortlist? selected = null) { string? selectedName = (selected ?? _lists.SelectedItem as WorkbenchShortlist)?.Name; _lists.ItemsSource = null; _lists.ItemsSource = _library.Lists; _lists.SelectedItem = _library.Lists.FirstOrDefault(list => list.Name == selectedName) ?? _library.Lists.FirstOrDefault(); _listGrid.ItemsSource = null; _presets.ItemsSource = null; _presets.ItemsSource = _library.Presets; _presets.SelectedIndex = _library.Presets.Count > 0 ? 0 : -1; }
  private void MarkLibraryChanged() { _libraryDirty = true; _libraryStatus.Text = "저장되지 않은 변경이 있습니다. ‘라이브러리 저장’으로 앱에 저장하세요. FM 내부 영입명단은 변경되지 않습니다."; }
  private async Task ResolveListAsync() { if (_lists.SelectedItem is not WorkbenchShortlist list) { _listGrid.ItemsSource = null; return; } var response = await CallAsync("resolve_targets", new { targets = list.Members }); _listGrid.ItemsSource = Read<List<EntityRecord>>(response.GetProperty("items")); AbilitySafeGridSort.Refresh(_listGrid, nameof(EntityRecord.DisplayName), path => AbilityVisibility.Current.IsHidden(path), AbilityVisibility.Current.HidePa); _status.Text = $"{list.Name}: {response.GetProperty("items").GetArrayLength()}명 확인 · 현재 자료에 없는 대상 {response.GetProperty("missing").GetArrayLength()}명"; }
- private async Task SaveLibraryAsync() { _library = Read<WorkbenchLibrary>(await CallAsync("library_put", new { library = _library })); _libraryDirty = false; RefreshLibrary(); if (!_connectionInvalidated) await ResolveListAsync(); _libraryStatus.Text = "앱 관심명단과 프리셋을 저장했습니다. FM 내부 영입명단과 별도로 보관됩니다."; }
+ private async Task SaveLibraryAsync() { var saved = await CallAsync("library_put", new { library = _library, expected = _libraryBaseline }); _libraryBaseline = saved; _library = Read<WorkbenchLibrary>(saved); _libraryDirty = false; RefreshLibrary(); if (!_connectionInvalidated) await ResolveListAsync(); _libraryStatus.Text = "앱 관심명단과 프리셋을 저장했습니다. FM 내부 영입명단과 별도로 보관됩니다."; }
+ private async Task ReloadLibraryAsync()
+ {
+  if (_libraryDirty && AppDialog.Show(this, "저장하지 않은 명단·프리셋 변경을 버리고 최신 저장본을 읽을까요?", "저장본 다시 읽기", MessageBoxButton.YesNo) != MessageBoxResult.Yes) return;
+  var saved = await CallAsync("library_get");
+  _libraryBaseline = saved; _library = Read<WorkbenchLibrary>(saved); _libraryDirty = false;
+  RefreshLibrary(); await ResolveListAsync(); _libraryStatus.Text = "최신 관심명단과 프리셋을 읽었습니다.";
+ }
  private async Task RemoveMissingAsync() { var list = SelectedList(); var response = await CallAsync("resolve_targets", new { targets = list.Members }); var missing = Read<List<WorkbenchRef>>(response.GetProperty("missing")).ToHashSet(); list.Members.RemoveAll(missing.Contains); MarkLibraryChanged(); await ResolveListAsync(); _status.Text = $"현재 자료에 없는 {missing.Count}개 대상을 명단 초안에서 제거했습니다. 저장 전까지 파일은 변경되지 않습니다."; }
  private async Task ImportLibraryAsync() { var dialog = new OpenFileDialog { Filter = "Touchline 라이브러리|*.json" }; if (dialog.ShowDialog(this) != true) return; if (_libraryDirty && AppDialog.Show(this, "저장되지 않은 라이브러리 초안을 가져온 자료로 교체할까요?", "라이브러리 가져오기", MessageBoxButton.YesNo) != MessageBoxResult.Yes) return; var response = await CallAsync("library_import", new { path = dialog.FileName }); _library = Read<WorkbenchLibrary>(response.GetProperty("library")); MarkLibraryChanged(); RefreshLibrary(); await ResolveListAsync(); _status.Text = "가져온 라이브러리를 검토하세요. 아직 저장하거나 게임에 적용하지 않았습니다."; }
  private async Task ExportLibraryAsync() { if (_libraryDirty) throw new InvalidOperationException("현재 변경을 먼저 라이브러리에 저장하세요"); var dialog = new SaveFileDialog { Filter = "Touchline 라이브러리|*.json", FileName = "touchline-library.json" }; if (dialog.ShowDialog(this) != true) return; await CallAsync("library_export", new { path = dialog.FileName }); _status.Text = "저장된 라이브러리를 내보냈습니다"; }

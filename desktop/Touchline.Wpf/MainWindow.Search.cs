@@ -24,6 +24,12 @@ public partial class MainWindow
     if(_busy||!CanLeave())return;
     await Guard(async()=>{await _searchView!.StopAsync();await OpenEntity(entity.Kind,entity.Id);},true);
    });
+   long historyGeneration = _recentHistory.SessionGeneration;
+   _searchView.SearchExecuted += state =>
+   {
+    if (!_dataLoaded || historyGeneration != _recentHistory.SessionGeneration) return;
+    _recentHistory.Search(state); SaveRecentHistory();
+   };
    SearchScreen.Children.Add(_searchView);
   }
   ContentColumns.Visibility=Visibility.Collapsed;

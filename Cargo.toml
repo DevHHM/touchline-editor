@@ -1,6 +1,6 @@
 [package]
 name = "touchline-editor"
-version = "0.14.0"
+version = "0.14.3"
 edition = "2024"
 description = "A local, native Football Manager editor with build-verified adapters"
 
@@ -8,6 +8,9 @@ description = "A local, native Football Manager editor with build-verified adapt
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+aes = "0.8"
+ctr = "0.9"
+zstd = "0.13"
 eframe = { version = "=0.33.0", default-features = false, features = ["default_fonts", "glow"] }
 egui_extras = { version = "=0.33.0", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }

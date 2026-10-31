@@ -105,6 +105,7 @@ Check(mixedTransitive && PositionOrder.Compare(tacticalPeople[0], staffRoleA) < 
 PositionFilterTests.Run(Check);
 NationalityFilterTests.Run(Check);
 SearchConditionTests.Run(Check);
+RecentNavigationHistoryTests.Run(Check);
 LeagueBrowserTests.Run(Check);
 SearchColumnTests.Run(Check);
 Check(field.EditText == "14" && field.Value == 13.625 && field.Original == 13.625 && !field.IsDirty, "rounded_display_preserves_fractional_baseline");

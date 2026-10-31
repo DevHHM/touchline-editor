@@ -108,6 +108,7 @@ public partial class MainWindow
  {
   _liveReload.InvalidateView();
   ++_liveViewEpoch;
+  _recentHistory.InvalidateSession();
   _reloadContext ??= new(_detail?.Entity.Kind ?? _kind, _detail?.Entity.Id, _tab, SearchScreen.IsVisible, _searchView?.CaptureReloadState(), LeagueScreen.IsVisible, _returnToLeague, _leagueBrowser?.CaptureState());
   _reloadDraftPath = PreserveAbandonedDraft();
   _scalarReviewWindow?.Close(); _scalarReviewWindow = null;

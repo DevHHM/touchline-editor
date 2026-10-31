@@ -35,7 +35,7 @@ powershell -NoProfile -File .\build-wpf.ps1
 ```
 
 The builder runs tests, builds the Rust engine, publishes the self-contained WPF app, builds the native
-launcher and creates `dist/Touchline-Editor-0.14.1-win-x64.zip` with its SHA-256 sidecar. The output folder
+launcher and creates `dist/Touchline-Editor-0.14.3-win-x64.zip` with its SHA-256 sidecar. The output folder
 must be empty; existing release folders and ZIP files are not overwritten. The build uses a locally
 installed `dotnet` SDK; its SDK directory must contain the official .NET license/third-party notices.
 
@@ -76,3 +76,19 @@ upstream licenses of bundled fonts and restored dependencies continue to apply. 
 ## Optional diagnostic collector
 
 The separate Cloudflare Worker source is in `services/diagnostics-collector`. See its README for deployment. The source includes no server secrets. Run `npm ci` and `npm test` there with Node 22 or newer. Local credential entry helpers and local Wrangler state are intentionally excluded.
+
+## Unshown WPF layout checks
+
+`desktop/Touchline.UiScaleTests` exercises real WPF measure/arrange, screen scale,
+text weight and apply guidance without showing windows, capturing the desktop,
+starting the engine or accessing FM. Keep its temporary settings isolated:
+
+```powershell
+$previousLayoutAppData = $env:LOCALAPPDATA
+try {
+    $env:LOCALAPPDATA = [IO.Path]::GetFullPath('output/ui-layout-test-profile')
+    dotnet run --project desktop/Touchline.UiScaleTests/Touchline.UiScaleTests.csproj --configuration Release -- output/ui-layout-test-results.json
+} finally {
+    $env:LOCALAPPDATA = $previousLayoutAppData
+}
+```

@@ -40,7 +40,7 @@ public sealed partial class SearchView : UserControl
  private readonly DataGrid _grid;
  private readonly Grid _toolbar;
  private readonly Border _tableCard;
- private readonly Button _search, _cancel, _reset, _newSearch, _editSearch, _save, _load, _direction, _openButton;
+ private readonly Button _search, _cancel, _reset, _newSearch, _editSearch, _save, _load, _direction, _openButton, _shortlists;
  private SearchCriteria _criteria = new();
  private string _kind = "", _sortKey = "ca";
  private EntityRecord? _sample;
@@ -51,6 +51,7 @@ public sealed partial class SearchView : UserControl
  private TaskCompletionSource? _searchFinished, _loadFinished;
  private Action? _qaAfterStart;
  private Window? _activeDialog;
+ public event Action<SearchReloadState>? SearchExecuted;
 
  public SearchView(BridgeClient bridge, bool live, EntityRecord? ownClub, Func<EntityRecord, Task> open)
  {
@@ -74,7 +75,8 @@ public sealed partial class SearchView : UserControl
   _reset = Button("모두 지우기", () => SafeAsync(ResetAsync));
   _save = Button("검색 저장", () => SafeAsync(() => PresetDialogAsync(true)));
   _load = Button("검색 불러오기", () => SafeAsync(() => PresetDialogAsync(false)));
-  foreach (var button in new[] { _newSearch, _editSearch, _reset, _save, _load }) { button.Margin = new Thickness(0, 0, 6, 5); commands.Children.Add(button); }
+  _shortlists = Button("관심명단", () => SafeAsync(OpenShortlistsAsync));
+  foreach (var button in new[] { _newSearch, _editSearch, _reset, _save, _load, _shortlists }) { button.Margin = new Thickness(0, 0, 6, 5); commands.Children.Add(button); }
   var footballCaption = Text("축구 구분", 12); footballCaption.Margin = new Thickness(0, 0, 8, 5); footballCaption.VerticalAlignment = VerticalAlignment.Center; footballCaption.ToolTip = FootballSearchCategories.Hint; _footballBar.Children.Add(footballCaption);
   foreach (var choice in FootballSearchCategories.Choices)
   {
@@ -102,10 +104,10 @@ public sealed partial class SearchView : UserControl
   var sortLabel = Text("정렬", 12); sortLabel.VerticalAlignment = VerticalAlignment.Center; sortLabel.Margin = new Thickness(0, 0, 8, 0); sorting.Children.Add(sortLabel); _sort.Width = 185; sorting.Children.Add(_sort);
   _direction = Button("내림차순 ↓", () => { _descending = !_descending; UpdateDirection(); ApplySort(); return Task.CompletedTask; }); _direction.Margin = new Thickness(6, 0, 0, 0); _direction.MinWidth = 92; sorting.Children.Add(_direction); Grid.SetColumn(sorting, 1); toolbar.Children.Add(sorting); Grid.SetRow(toolbar, 4); root.Children.Add(toolbar);
 
-  _grid = new DataGrid { ItemsSource = _resultView, AutoGenerateColumns = false, CanUserAddRows = false, CanUserDeleteRows = false, IsReadOnly = true, SelectionMode = DataGridSelectionMode.Single, SelectionUnit = DataGridSelectionUnit.FullRow, EnableRowVirtualization = true, EnableColumnVirtualization = true, RowHeight = 43, ColumnHeaderHeight = 35, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, BorderThickness = new Thickness(0) };
+  _grid = new DataGrid { ItemsSource = _resultView, AutoGenerateColumns = false, CanUserAddRows = false, CanUserDeleteRows = false, IsReadOnly = true, SelectionMode = DataGridSelectionMode.Extended, SelectionUnit = DataGridSelectionUnit.FullRow, EnableRowVirtualization = true, EnableColumnVirtualization = true, RowHeight = 43, ColumnHeaderHeight = 35, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, BorderThickness = new Thickness(0) };
   VirtualizingPanel.SetVirtualizationMode(_grid, VirtualizationMode.Recycling); ScrollViewer.SetCanContentScroll(_grid, true);
   NameCopy.AttachGrid(_grid, item => (item as SearchRow)?.Entity, message => _status.Text = message);
-  _grid.ToolTip = "우클릭: 이름 복사 · Ctrl+C / Ctrl+Shift+C";
+  _grid.ToolTip = "Ctrl·Shift: 여러 명 선택 → 관심명단 · 우클릭: 이름 복사";
   _grid.MouseDoubleClick += async (_, args) => { if (FindRow(args.OriginalSource as DependencyObject) != null) await SafeAsync(OpenSelectedAsync); };
   _grid.PreviewKeyDown += async (_, args) => { if (args.Key == Key.Enter) { args.Handled = true; await SafeAsync(OpenSelectedAsync); } };
   _grid.Sorting += GridSorting;
@@ -113,7 +115,7 @@ public sealed partial class SearchView : UserControl
   var table = new Grid(); table.Children.Add(_grid); _emptyPanel = new Border { Background = Brush("PanelBrush"), Child = _empty, Padding = new Thickness(24), IsHitTestVisible = false }; _empty.HorizontalAlignment = HorizontalAlignment.Center; _empty.VerticalAlignment = VerticalAlignment.Center; _empty.TextAlignment = TextAlignment.Center; table.Children.Add(_emptyPanel);
   _errorPanel = new Border { Background = Solid("#302923"), BorderBrush = Solid("#705A3A"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(6), Padding = new Thickness(10), Margin = new Thickness(10), VerticalAlignment = VerticalAlignment.Bottom, Visibility = Visibility.Collapsed, Child = new ScrollViewer { Content = _errorText, MaxHeight = 85, VerticalScrollBarVisibility = ScrollBarVisibility.Auto } }; table.Children.Add(_errorPanel);
   _tableCard = Card(table); Grid.SetRow(_tableCard, 5); root.Children.Add(_tableCard);
-  var footer = new DockPanel { Margin = new Thickness(0, 9, 0, 0) }; _openButton = Button("선택한 프로필 열기 ↗", () => SafeAsync(OpenSelectedAsync)); _openButton.IsEnabled = false; DockPanel.SetDock(_openButton, Dock.Right); footer.Children.Add(_openButton); _status.Margin = new Thickness(0, 0, 10, 0); _status.MaxHeight = 45; var footerText = new StackPanel(); footerText.Children.Add(_status); footerText.Children.Add(Text("우클릭: 이름 복사 · Ctrl+C / Ctrl+Shift+C", 11)); footer.Children.Add(footerText); Grid.SetRow(footer, 6); root.Children.Add(footer);
+  var footer = new DockPanel { Margin = new Thickness(0, 9, 0, 0) }; _openButton = Button("선택한 프로필 열기 ↗", () => SafeAsync(OpenSelectedAsync)); _openButton.IsEnabled = false; DockPanel.SetDock(_openButton, Dock.Right); footer.Children.Add(_openButton); _status.Margin = new Thickness(0, 0, 10, 0); _status.MaxHeight = 45; var footerText = new StackPanel(); footerText.Children.Add(_status); footerText.Children.Add(Text("Ctrl·Shift: 여러 명 선택 → 관심명단 · 우클릭: 이름 복사", 11)); footer.Children.Add(footerText); Grid.SetRow(footer, 6); root.Children.Add(footer);
   _grid.SelectionChanged += (_, _) => _openButton.IsEnabled = _grid.SelectedItem is SearchRow;
   _name.TextChanged += (_, _) => QuickChanged(); _scope.SelectionChanged += (_, _) => QuickChanged();
   _name.KeyDown += async (_, args) => { if (args.Key == Key.Enter && !_searching) { args.Handled = true; await SafeAsync(ApplyQuickAsync); } };
@@ -262,6 +264,7 @@ public sealed partial class SearchView : UserControl
  private async Task ApplyCriteriaAsync(SearchCriteria next)
  {
   ValidateCriteria(next); await StopAsync(); _criteria = next.Clone(); SyncQuick(); RefreshSummary(); await SearchAsync();
+  if (_complete && !_lastCancelled && !_resultsInvalidated && _failed == 0) SearchExecuted?.Invoke(CaptureReloadState());
  }
  private void SyncQuick() { _suppress = true; _name.Text = _criteria.Name; _scope.SelectedValue = _criteria.Scope; UpdateFootballButtons(); _suppress = false; }
  private void UpdateFootballButtons()
@@ -300,7 +303,7 @@ public sealed partial class SearchView : UserControl
  private void UpdateButtons()
  {
   bool ready = _initialized && !_loading && !_searching;
-  foreach (var button in new[] { _search, _newSearch, _editSearch, _reset, _save, _load }) button.IsEnabled = ready;
+  foreach (var button in new[] { _search, _newSearch, _editSearch, _reset, _save, _load, _shortlists }) button.IsEnabled = ready;
   _cancel.IsEnabled = _searching; _scope.IsEnabled = ready && (_kind is "Player" or "Staff" or "Person"); _name.IsEnabled = ready; _sort.IsEnabled = ready; _view.IsEnabled = ready; _columnsButton.IsEnabled = ready; _direction.IsEnabled = ready; _chips.IsEnabled = ready;
   _footballBar.IsEnabled = ready;
  }
