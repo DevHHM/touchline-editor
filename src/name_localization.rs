@@ -559,7 +559,10 @@ pub(crate) mod tests {
             let bytes = file.after.as_ref().unwrap(); assert!(bytes.starts_with(b"\xef\xbb\xbf"));
             let text = TextFile::decode(bytes).unwrap().text;
             assert!(text.contains("\"CHANGE_PLAYER_NAME\"\t7\t\"Viktor Bjarki\"\t\"빅토르 다다손\"\t\"Daðason\"\n"));
-            assert!(!file.path.to_string_lossy().contains("2400") && !file.path.to_string_lossy().contains("2700"));
+            // Check the database path, not the random temporary root whose
+            // timestamp/ID can coincidentally contain these digit sequences.
+            assert!(!file.path.ends_with(Path::new("2400/lnc/all").join(MANAGED_FILE)));
+            assert!(!file.path.ends_with(Path::new("2700/lnc/all").join(MANAGED_FILE)));
         }
         assert!(inventory(&f.installation).unwrap().is_empty());
     }

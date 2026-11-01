@@ -40,9 +40,16 @@ impl ApiSession {
                 } else {
                     crate::runtime_log::event("error","command","invalid_request","Malformed or unknown command rejected");
                 }
-                json!({"id":id,"ok":false,"error":format!("{error:#}")})
+                self.failure_reply(id,&error,log_command)
             },
         }
+    }
+    fn failure_reply(&self,id:Value,error:&anyhow::Error,command:Option<&str>)->Value {
+        let mut response=json!({"id":id,"ok":false,"error":format!("{error:#}")});
+        if matches!(command,Some("connect"|"connection_poll"|"connection_reconnect")) {
+            response["diagnostic_context"]=json!(self.bridge.connection.diagnostic_context);
+        }
+        response
     }
 }
 
@@ -61,6 +68,18 @@ macro_rules! command {
 }
 
 const COMMANDS: &[Command] = &[
+    #[cfg(feature = "fm27-health-experiment")]
+    command!("injury_test_preview", "preview", "Local experiment only: inspect verified FM27 active injuries for one player; no writes. Requires explicit experiment environment opt-in.", "id", "backup_path"),
+    #[cfg(feature = "fm27-health-experiment")]
+    command!("injury_test_apply", "game_write", "Local experiment only: consume one injury test preview with a retained save backup. Native cleanup has no scalar undo. Never retries a call.", "token", ""),
+    #[cfg(feature = "fm27-health-experiment")]
+    command!("ban_test_preview", "preview", "Local experiment only: inspect the native FM27 all-bans list for one player; no writes.", "id", "backup_path"),
+    #[cfg(feature = "fm27-health-experiment")]
+    command!("ban_test_apply", "game_write", "Local experiment only: run the fixed native all-bans sequence and verify other health state. Requires a single-use preview and retained save backup.", "token", ""),
+    #[cfg(feature = "fm27-transfer-experiment")]
+    command!("transfer_test_preview", "preview", "Local experiment only: inspect one non-loan player's contract and strict direct source/destination rosters for the fixed zero-fee native route.", "player_id,destination_club_id", "backup_path"),
+    #[cfg(feature = "fm27-transfer-experiment")]
+    command!("transfer_test_apply", "game_write", "Local experiment only: consume a retained native transfer plan once. Completion requires new contract affiliation and both exact roster membership checks.", "token", ""),
     command!("capabilities", "read", "Discover supported commands, limits and safe edit workflows.", "", ""),
     command!("status", "read", "Connection and indexed record counts; also observes save changes.", "", ""),
     command!("summary", "read", "Alias of status.", "", ""),
@@ -164,6 +183,25 @@ pub(crate) fn capabilities() -> Value {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn failed_connection_replies_include_only_observed_pe_metadata() {
+        let mut session=super::ApiSession::default();
+        let context=crate::backend::watch::DiagnosticContext::from_pe(0x12345678,0x12345000);
+        session.bridge.connection.diagnostic_context=Some(context);
+        let failure=anyhow::anyhow!("unsupported build");
+        for command in ["connect","connection_poll","connection_reconnect"] {
+            let response=session.failure_reply(serde_json::json!(42),&failure,Some(command));
+            assert_eq!(response["diagnostic_context"],serde_json::to_value(context).unwrap());
+            assert_eq!(response["ok"],false);
+            assert_eq!(response["id"],42);
+            assert_eq!(response.as_object().unwrap().len(),4);
+        }
+        for command in [Some("detail"),Some("preview"),Some("apply"),None] {
+            assert!(session.failure_reply(serde_json::json!(42),&failure,command).get("diagnostic_context").is_none());
+        }
+        session.bridge.connection.diagnostic_context=None;
+        assert!(session.failure_reply(serde_json::json!(42),&failure,Some("connect"))["diagnostic_context"].is_null());
+    }
     use super::*;
     #[test]
     fn envelope_rejects_malformed_requests_and_unknown_commands() {
@@ -173,6 +211,56 @@ mod tests {
         }
         let response=s.handle(json!({"id":42,"command":"status"}));
         assert_eq!(response["id"],42);assert_eq!(response["ok"],true);assert_eq!(response["data"]["connected"],false);
+    }
+    #[test]
+    fn unsupported_transfer_loan_and_heal_requests_leave_snapshot_and_previews_unchanged() {
+        struct Scratch { root:PathBuf, path:PathBuf }
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                if self.path.parent()==Some(self.root.as_path())
+                    && self.path.file_name().is_some_and(|n|n.to_string_lossy().starts_with("touchline-unsupported-mutations-")) {
+                    let _=std::fs::remove_dir_all(&self.path);
+                }
+            }
+        }
+        let root=std::fs::canonicalize(std::env::temp_dir()).unwrap();
+        let nonce=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let scratch=Scratch {path:root.join(format!("touchline-unsupported-mutations-{}-{nonce}",std::process::id())),root};
+        std::fs::create_dir(&scratch.path).unwrap();
+        let (mut bridge,detail)=super::super::tests::fixture();
+        let index_path=scratch.path.join("index.json");
+        let detail_path=scratch.path.join("detail-Player-7.json");
+        let index_before=serde_json::to_vec(bridge.index.as_ref().unwrap()).unwrap();
+        let detail_before=serde_json::to_vec(&detail).unwrap();
+        std::fs::write(&index_path,&index_before).unwrap();
+        std::fs::write(&detail_path,&detail_before).unwrap();
+        bridge.snapshot=Some(index_path.clone());
+        let mut session=ApiSession {bridge};
+        let preview=session.handle(json!({"id":1,"command":"preview","args":{"kind":"Player","id":7,"edits":[{"key":"ca","value":110}]}}));
+        assert_eq!(preview["ok"],true);
+        let token=preview["data"]["token"].as_str().unwrap();
+        let state_before=(session.bridge.epoch,session.bridge.connection_generation,session.bridge.sequence);
+        let uncreated=scratch.path.join("must-not-create.json");
+        for (i,command) in ["force_transfer","staff_force_transfer","loan_create","loan_end","remove_injuries","remove_bans"].iter().enumerate() {
+            assert!(!COMMANDS.iter().any(|item|item.name==*command));
+            let response=session.handle(json!({"id":100+i,"command":command,"args":{
+                "kind":"Player","id":7,"target_club_id":99,"path":uncreated,"token":token}}));
+            assert_eq!(response["id"],100+i);
+            assert_eq!(response["ok"],false);
+            assert!(response["error"].as_str().unwrap().starts_with("Unknown command:"));
+            assert!(response.get("data").is_none());
+            assert_eq!(std::fs::read(&index_path).unwrap(),index_before);
+            assert_eq!(std::fs::read(&detail_path).unwrap(),detail_before);
+            assert_eq!(std::fs::read_dir(&scratch.path).unwrap().count(),2);
+            assert!(!uncreated.exists());
+            assert_eq!(serde_json::to_vec(session.bridge.index.as_ref().unwrap()).unwrap(),index_before);
+            assert_eq!(serde_json::to_vec(session.bridge.details.get(&(EntityKind::Player,7)).unwrap()).unwrap(),detail_before);
+            assert_eq!(session.bridge.snapshot.as_ref(),Some(&index_path));
+            assert!(!session.bridge.live);
+            assert_eq!((session.bridge.epoch,session.bridge.connection_generation,session.bridge.sequence),state_before);
+            assert_eq!(session.bridge.pending.len(),1);
+            assert!(session.bridge.pending.contains_key(token), "rejected request consumed the prior preview");
+        }
     }
     #[test]
     fn offline_preview_and_apply_use_existing_baseline_and_single_use_guard() {
@@ -192,17 +280,39 @@ mod tests {
         let sources=[include_str!("../bridge.rs"),include_str!("workspace.rs"),include_str!("relations.rs"),include_str!("staff_review.rs"),include_str!("name_localization.rs")];
         let mut discovered=BTreeSet::new();
         for source in sources {
-            let source=source.split("#[cfg(test)]").next().unwrap();
-            for line in source.lines().filter(|line|line.starts_with("            \"")&&line.contains("=>")) {
+            // Individual test-only fields/hooks may appear before dispatch;
+            // stop at the test module rather than the first cfg attribute.
+            for line in source.lines().take_while(|line|*line!="mod tests {").filter(|line|line.starts_with("            \"")&&line.contains("=>")) {
                 let arm=line.split("=>").next().unwrap();
                 for (i,quoted) in arm.split('"').enumerate() { if i%2==1 { discovered.insert(quoted); } }
             }
+        }
+        // include_str! sees feature-gated source arms even when this binary
+        // intentionally excludes the local health experiment.
+        if !cfg!(feature = "fm27-health-experiment") {
+            discovered.remove("injury_test_preview");
+            discovered.remove("injury_test_apply");
+            discovered.remove("ban_test_preview");
+            discovered.remove("ban_test_apply");
+        }
+        if !cfg!(feature = "fm27-transfer-experiment") {
+            discovered.remove("transfer_test_preview");
+            discovered.remove("transfer_test_apply");
         }
         let declared=COMMANDS.iter().map(|c|c.name).collect::<BTreeSet<_>>();
         assert_eq!(declared.len(),COMMANDS.len(),"Duplicate catalogue command");
         assert_eq!(declared,discovered);
         let mut s=ApiSession::default();
         assert_eq!(s.handle(json!({"id":5,"command":"capabilities"}))["data"],capabilities());
+    }
+    #[test]
+    fn injury_experiment_commands_are_absent_without_the_build_feature() {
+        for name in ["injury_test_preview", "injury_test_apply", "ban_test_preview", "ban_test_apply"] {
+            assert_eq!(COMMANDS.iter().any(|command| command.name == name), cfg!(feature = "fm27-health-experiment"));
+        }
+        for name in ["transfer_test_preview", "transfer_test_apply"] {
+            assert_eq!(COMMANDS.iter().any(|command| command.name == name), cfg!(feature = "fm27-transfer-experiment"));
+        }
     }
     #[test]
     fn api_responses_do_not_expose_binding_addresses() {

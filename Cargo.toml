@@ -1,8 +1,14 @@
 [package]
 name = "touchline-editor"
-version = "0.14.3"
+version = "0.14.5"
 edition = "2024"
 description = "A local, native Football Manager editor with build-verified adapters"
+
+[features]
+default = []
+# Local, explicitly authorized FM27 health experiment. Never enabled in releases.
+fm27-health-experiment = []
+fm27-transfer-experiment = ["fm27-health-experiment"]
 
 [dependencies]
 anyhow = "1"

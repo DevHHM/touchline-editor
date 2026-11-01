@@ -12,10 +12,15 @@ const CODES = new Set(["access_denied", "unsupported_build", "registry_validatio
   "engine_missing", "engine_transport", "timeout", "other_error", "application_error"]);
 const BUILDS = new Set(["6ADFB11C-19E69000", "6A229E8A-1EB41000"]);
 const KEYS = ["schema", "product", "report_id", "occurred_at", "editor_version", "source", "category", "event", "code", "build"];
+const DETAIL_KEYS = ["failure_stage", "exception_type", "build_source", "storefront"];
+const STAGES = new Set(["unknown", "handled", "unhandled_domain", "unobserved_task", "connect", "connection_poll", "connection_reconnect", "connection_state", "engine_start", "engine_lifecycle"]);
+const EXCEPTIONS = new Set(["none", "unknown", "bridge", "aggregate", "null_reference", "invalid_operation", "argument", "argument_null", "argument_out_of_range", "io", "file_not_found", "directory_not_found", "unauthorized_access", "timeout", "http_request", "json", "format", "overflow", "operation_canceled", "task_canceled", "not_supported", "object_disposed", "win32", "xaml_parse"]);
+const BUILD_SOURCES = new Set(["unknown", "error_text", "verified_session", "observed_pe"]);
+const STOREFRONTS = new Set(["unknown", "steam", "epic", "xbox_game_pass"]);
 const encoder = new TextEncoder();
 const PRIVACY = `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Touchline diagnostic sharing</title>
 <main><h1>Touchline diagnostic sharing</h1><p>Sharing is optional. The editor asks whether to send each new error report, with No selected by default. Approving one report does not authorize future reports. Only a report you approve enters the local sending queue; that approved report may be retried for up to seven days if delivery fails. You can cancel pending reports from the editor, which stops pending uploads and clears the local sharing outbox. Reports already accepted or published cannot be withdrawn by cancelling pending reports.</p>
-<h2>What is sent</h2><p>Editor version, component, a predefined error category/code, an optional recognized game-build identifier, UTC occurrence time, and a random per-report identifier. No player names, save contents, local paths, memory addresses, passwords, access tokens, exception text, computer identifiers or local log files are sent.</p>
+<h2>What is sent</h2><p>Editor version, component, a predefined error category/code, an optional game-build identifier, UTC occurrence time, and a random per-report identifier. With a distributor-configured schema-2 collector, the preview also includes a predefined failure stage, an allowlisted exception-kind code, build provenance and a known storefront code (or unknown). An observed_pe build consists only of two numeric PE header fields (timestamp and image size); it does not claim that the build is supported or verified. The complete outgoing payload is shown before approval. No arbitrary exception type names, player names, save contents, local paths, memory addresses, passwords, access tokens, exception text, stack traces, computer identifiers or local log files are sent.</p>
 <h2>Public destination</h2><p>Equal error summaries are grouped into public issues at <a href="https://github.com/DevHHM/touchline-editor/issues">DevHHM/touchline-editor</a>. Issues contain predefined codes, version/build information, aggregate report counts and UTC days. Counts are anonymous reports, not unique affected people. Later reports update the existing managed summary at most hourly, subject to a global daily limit; no per-report comments are posted. Notes outside the marked summary are preserved.</p>
 <h2>Retention and rate limiting</h2><p>The server receives the network IP to handle the request, converts it to a keyed daily hash for abuse limits, and never stores or publishes the raw IP in application data. Daily hash rate keys expire after two days. Random report-ID receipts and unattempted queue records expire after seven days. Published fingerprints, aggregate counts/timestamps and unresolved creation attempts are retained until an operator removes them so retries cannot create duplicate public issues. Public GitHub issues remain public until the repository operator removes them.</p>
 <p>Cloudflare and GitHub process traffic under their own platform policies. Application request/body logging is disabled in this deployment configuration. No personal diagnostic files are uploaded by this feature. An accepted report is durably queued; rate limits or an unresolved network failure may delay or prevent creation of an issue.</p>
@@ -27,29 +32,36 @@ const hex = buffer => [...new Uint8Array(buffer)].map(n => n.toString(16).padSta
 const dayKey = time => new Date(time).toISOString().slice(0, 10);
 
 export function validateReport(input, now = Date.now()) {
-  if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).length !== KEYS.length ||
-      KEYS.some(key => !Object.hasOwn(input, key)) || input.schema !== 1 || input.product !== "touchline-editor" ||
+  const keys = input?.schema === 2 ? [...KEYS, ...DETAIL_KEYS] : KEYS;
+  if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).length !== keys.length ||
+      keys.some(key => !Object.hasOwn(input, key)) || ![1, 2].includes(input.schema) || input.product !== "touchline-editor" ||
       typeof input.report_id !== "string" || !/^[a-f0-9]{32}$/.test(input.report_id) ||
       typeof input.editor_version !== "string" || !/^\d{1,3}\.\d{1,3}\.\d{1,3}(?:\.\d{1,5})?$/.test(input.editor_version) ||
       !["client", "engine"].includes(input.source) || !CODES.has(input.code) ||
-      (input.build !== null && !BUILDS.has(input.build))) return null;
+      (input.build !== null && !BUILDS.has(input.build) && !(input.schema === 2 && input.build_source === "observed_pe" &&
+        typeof input.build === "string" && /^[0-9A-F]{8}-[0-9A-F]{8}$/.test(input.build) && !input.build.endsWith("-00000000")))) return null;
   const expected = { connection: ["connection_failed"], lifecycle: ["engine_failed"], application: ["application_error"],
     command: ["connect", "connection_poll", "connection_reconnect"] };
   if (!Object.hasOwn(expected, input.category) || !expected[input.category].includes(input.event) ||
       (input.category === "application" && input.code !== "application_error")) return null;
+  if (input.schema === 2 && (!STAGES.has(input.failure_stage) || !EXCEPTIONS.has(input.exception_type) ||
+      !BUILD_SOURCES.has(input.build_source) || !STOREFRONTS.has(input.storefront) ||
+      (input.build === null ? input.build_source !== "unknown" : !["error_text", "verified_session", "observed_pe"].includes(input.build_source)))) return null;
   if (typeof input.occurred_at !== "string" ||
       !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,7})?(?:Z|\+00:00)$/.test(input.occurred_at)) return null;
   const time = Date.parse(input.occurred_at);
   if (!Number.isFinite(time) || time < now - REPORT_RETENTION || time > now + 300_000 ||
       new Date(time).toISOString().slice(0, 19) !== input.occurred_at.slice(0, 19)) return null;
   // Reconstruct exactly the admitted schema. No extra/raw text survives.
-  return Object.fromEntries(KEYS.map(key => [key, key === "occurred_at" ? new Date(time).toISOString() : input[key]]));
+  return Object.fromEntries(keys.map(key => [key, key === "occurred_at" ? new Date(time).toISOString() : input[key]]));
 }
 
 export async function fingerprint(report) {
-  return hex(await crypto.subtle.digest("SHA-256", encoder.encode([
+  const fields = [
     report.editor_version, report.source, report.category, report.event, report.code, report.build ?? "",
-  ].join("|"))));
+  ];
+  if (report.schema === 2) fields.push("v2", report.failure_stage, report.exception_type, report.build_source, report.storefront);
+  return hex(await crypto.subtle.digest("SHA-256", encoder.encode(fields.join("|"))));
 }
 export async function clientKey(ip, day, secret) {
   const key = await crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
@@ -80,7 +92,7 @@ export default {
       "Content-Type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=300",
       "Content-Security-Policy": "default-src 'none'; base-uri 'none'; frame-ancestors 'none'", "X-Content-Type-Options": "nosniff",
     } });
-    if (request.method === "GET" && url.pathname === "/health") return json({ service: "touchline-diagnostics", schema: 1 });
+    if (request.method === "GET" && url.pathname === "/health") return json({ service: "touchline-diagnostics", schema: 1, accepted_schemas: [1, 2] });
     if (request.method !== "POST" || url.pathname !== "/v1/reports" || url.search) return json({ error: "not_found" }, 404);
     if (request.headers.has("origin")) return json({ error: "browser_requests_disabled" }, 403);
     if (request.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase() !== "application/json") return json({ error: "json_required" }, 415);
@@ -108,7 +120,8 @@ function managedSummary(row) {
   return `Automatically aggregated, opt-in diagnostic summary.\n\n` +
       `| Field | Value |\n|---|---|\n| Editor version | ${row.version} |\n| Component | ${row.source} |\n` +
       `| Category | ${row.category} |\n| Event | ${row.event} |\n| Error code | ${row.code} |\n` +
-      `| Verified game build | ${row.build ?? "unknown"} |\n| Reports received | ${row.count} |\n` +
+      (row.failure_stage ? `| Failure stage | ${row.failure_stage} |\n| Exception kind | ${row.exception_type} |\n| Build provenance | ${row.build_source} |\n| Storefront | ${row.storefront} |\n` : "") +
+      `| ${row.failure_stage ? "Game build fingerprint" : "Verified game build"} | ${row.build ?? "unknown"} |\n| Reports received | ${row.count} |\n` +
       `| First observed day (UTC) | ${row.first_at.slice(0, 10)} |\n| Latest observed day (UTC) | ${row.last_at.slice(0, 10)} |\n\n` +
       `This report contains no save data, player names, local paths, memory addresses, tokens or raw error messages. ` +
       `Reports are anonymous and do not establish the number of distinct affected users. ` +
@@ -161,6 +174,8 @@ export class DiagnosticsQueue {
     const columns = new Set([...this.sql.exec("PRAGMA table_info(aggregates)")].map(column => column.name));
     for (const column of ["published_count", "last_published_at", "next_update_at", "update_lease_until", "update_blocked"])
       if (!columns.has(column)) this.sql.exec(`ALTER TABLE aggregates ADD COLUMN ${column} INTEGER NOT NULL DEFAULT 0`);
+    for (const column of DETAIL_KEYS)
+      if (!columns.has(column)) this.sql.exec(`ALTER TABLE aggregates ADD COLUMN ${column} TEXT`);
     this.sql.exec("CREATE INDEX IF NOT EXISTS queue_due ON aggregates(state,next_at)");
   }
   one(query, ...args) { return [...this.sql.exec(query, ...args)][0]; }
@@ -198,10 +213,11 @@ export class DiagnosticsQueue {
     for (const [key] of buckets) this.sql.exec("INSERT INTO rates VALUES (?,1,?) ON CONFLICT(bucket) DO UPDATE SET count=count+1", key, now + 2 * DAY);
     if (receipt) return 202;
     this.sql.exec("INSERT INTO receipts VALUES (?,?,?)", report.report_id, fp, now + REPORT_RETENTION);
-    this.sql.exec(`INSERT INTO aggregates (fp,version,source,category,event,code,build,count,first_at,last_at,created)
-      VALUES (?,?,?,?,?,?,?,1,?,?,?) ON CONFLICT(fp) DO UPDATE SET count=count+1,
+    this.sql.exec(`INSERT INTO aggregates (fp,version,source,category,event,code,build,count,first_at,last_at,created,failure_stage,exception_type,build_source,storefront)
+      VALUES (?,?,?,?,?,?,?,1,?,?,?,?,?,?,?) ON CONFLICT(fp) DO UPDATE SET count=count+1,
       first_at=MIN(first_at,excluded.first_at),last_at=MAX(last_at,excluded.last_at)`, fp, report.editor_version,
-    report.source, report.category, report.event, report.code, report.build, report.occurred_at, report.occurred_at, now);
+    report.source, report.category, report.event, report.code, report.build, report.occurred_at, report.occurred_at, now,
+    report.failure_stage ?? null, report.exception_type ?? null, report.build_source ?? null, report.storefront ?? null);
     return 202;
   }
   async schedule() {

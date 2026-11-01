@@ -29,6 +29,8 @@ internal static class DiagnosticSharingTests
  {
   string root=Path.GetFullPath(Path.Combine(Path.GetTempPath(),"touchline-sharing-tests-"+Guid.NewGuid().ToString("N")));Directory.CreateDirectory(root);
   try{
+   TestRecognizedBuildAmbiguity(check);
+   TestFailureClassification(check);
    string folder=Path.Combine(root,"no-consent");var handler=new FakeHandler();
    using(var client=Client(folder,handler)){
     client.EnqueueApproved(Record());await client.SendPendingAsync();
@@ -96,6 +98,7 @@ internal static class DiagnosticSharingTests
    await TestRevocationPersistenceFailure(root,check);
    await TestConsentScopes(root,check);
    await TestPerErrorConsent(root,check);
+   await TestDetailedReports(root,check);
 
    TestCollectorConfiguration(root,check);
    await TestTamperedOutbox(root,check);
@@ -103,6 +106,95 @@ internal static class DiagnosticSharingTests
    string temporaryRoot=Path.TrimEndingDirectorySeparator(Path.GetFullPath(Path.GetTempPath()))+Path.DirectorySeparatorChar;
    if(root.StartsWith(temporaryRoot,StringComparison.OrdinalIgnoreCase)&&Path.GetFileName(root).StartsWith("touchline-sharing-tests-",StringComparison.Ordinal))Directory.Delete(root,true);
   }
+ }
+ private static void TestFailureClassification(Action<bool,string> check)
+ {
+  string[] transport=[
+   "Rust 엔진 연결이 종료되었습니다.",
+   "Rust 엔진이 종료되었습니다. 종료 코드: 1",
+   "Rust 엔진과 통신하지 못했습니다. Rust 엔진 연결이 종료되었습니다.",
+   "Rust 엔진과 통신하지 못했습니다. 연결에서 데이터를 읽을 수 없습니다.",
+   "Rust 엔진 응답 순서 또는 형식이 올바르지 않습니다."
+  ];
+  check(transport.All(message=>SharedDiagnosticReport.Classify(message)=="engine_transport"),"sharing_known_engine_shutdown_and_communication_errors_are_transport_failures");
+  string[] timeouts=["Rust 엔진 응답 시간 초과","Rust 엔진과 통신하지 못했습니다. response timeout","pipe timeout","Rust 엔진 연결이 종료되었습니다. 작업 시간 초과"];
+  check(timeouts.All(message=>SharedDiagnosticReport.Classify(message)=="timeout"),"sharing_response_and_wrapped_transport_timeouts_keep_timeout_category");
+  string[] denied=["FM 접근 실패 (os error 5)","OS ERROR 5","os error 5: 접근 실패","액세스가 거부되었습니다.","Access is denied."];
+  check(denied.All(message=>SharedDiagnosticReport.Classify(message)=="access_denied"),"sharing_exact_os_error_5_and_translated_permission_failures_are_denied");
+  string[] otherCodes=["os error 50","os error 500","os error 51","os error 5000","os error 15","bios error 5","os error 5_suffix"];
+  check(otherCodes.All(message=>SharedDiagnosticReport.Classify(message)=="other_error"),"sharing_permission_code_has_word_boundaries_and_never_matches_50_or_500");
+  check(SharedDiagnosticReport.Classify("Rust 엔진과 통신하지 못했습니다. os error 50")=="engine_transport","sharing_other_os_errors_in_engine_failure_keep_transport_category");
+  check(SharedDiagnosticReport.Classify("Rust 엔진 실행 파일을 찾을 수 없습니다.")=="engine_missing"&&SharedDiagnosticReport.Classify("통신하지 못했습니다.")=="other_error","sharing_engine_missing_and_unrecognized_errors_keep_existing_categories");
+  foreach(int schema in new[]{1,2}){
+   var report=SharedDiagnosticReport.FromLocalRecord(Record(message:transport[2]+" PRIVATE_MESSAGE token=PRIVATE_TOKEN",category:"command",eventName:"connect"),schema)!;
+   check(report.Code=="engine_transport"&&report.ValidMetadata()&&!report.PayloadPreview().Contains("PRIVATE",StringComparison.Ordinal),"sharing_transport_classification_preserves_allowlisted_private_payload_schema_"+schema);
+  }
+ }
+ private static void TestRecognizedBuildAmbiguity(Action<bool,string> check)
+ {
+  const string fm27="6ADFB11C-19E69000",fm26="6A229E8A-1EB41000",unknown="12345678-01234000";
+  bool Omitted(string message)=>SharedDiagnosticReport.FromLocalRecord(Record(message:message))!.Build==null&&
+   SharedDiagnosticReport.FromLocalRecord(Record(message:message),2) is {Build:null,BuildSource:"unknown"};
+  check(new[]{fm27+"\n"+fm26,fm26+"\n"+fm27}.All(Omitted),"sharing_mixed_known_process_builds_never_choose_first_identity");
+  check(new[]{fm27+"\n"+unknown,unknown+"\n"+fm27,fm27+"\nmodule_"+unknown,fm27+"-01234000"}.All(Omitted),"sharing_known_and_unknown_pe_identities_are_ambiguous_in_either_order_or_label");
+  check(new[]{fm27,fm26}.All(build=>SharedDiagnosticReport.RecognizedBuild(build+"\n"+build.ToLowerInvariant().Replace('-','/')+"\n"+build)==build),"sharing_repeated_same_pe_build_case_and_slash_variants_remain_one_identity");
+  var record=JsonNode.Parse(Record(message:fm27+"\n"+unknown))!.AsObject();record["observed_pe_build"]=unknown;
+  var observed=SharedDiagnosticReport.FromLocalRecord(record.ToJsonString(),2)!;record["game_build"]=fm26;
+  var verified=SharedDiagnosticReport.FromLocalRecord(record.ToJsonString(),2)!;
+  check(observed.Build==unknown&&observed.BuildSource=="observed_pe"&&verified.Build==fm26&&verified.BuildSource=="verified_session"&&SharedDiagnosticReport.FromLocalRecord(record.ToJsonString())!.Build==null,"sharing_structured_observed_and_verified_context_still_override_ambiguous_message");
+ }
+ private static async Task TestDetailedReports(string root,Action<bool,string> check)
+ {
+  string Detailed(string eventName="handled",string type="System.NullReferenceException",string? storefront="steam"){
+   var record=JsonNode.Parse(Record(version:"0.14.3",category:"application",eventName:eventName,message:"PRIVATE_NAME C:\\PRIVATE_PATH token=PRIVATE_TOKEN"))!.AsObject();
+   record["causes"]=new JsonArray(new JsonObject{["type"]=type,["message"]="PRIVATE_EXCEPTION_MESSAGE"});
+   record["game_build"]="6ADFB11C-19E69000";record["storefront"]=storefront;return record.ToJsonString();
+  }
+  var detailed=SharedDiagnosticReport.FromLocalRecord(Detailed(),2)!;
+  check(detailed.Fingerprint.Equals("8e23f315ed96c57888ca5253c356bebd403a80067b5b146932596ac3124ec982",StringComparison.OrdinalIgnoreCase),"sharing_v2_fingerprint_matches_collector_shared_fixture");
+  check(detailed.Schema==2&&detailed.FailureStage=="handled"&&detailed.ExceptionType=="null_reference"&&detailed.BuildSource=="verified_session"&&detailed.Storefront=="steam"&&detailed.ValidMetadata(),"sharing_v2_preserves_only_allowlisted_stage_exception_and_known_game_context");
+  string preview=detailed.PayloadPreview();
+  check(!preview.Contains("PRIVATE")&&!preview.Contains("System.")&&!preview.Contains("message")&&!preview.Contains("causes"),"sharing_v2_preview_excludes_raw_messages_types_paths_tokens_and_causes");
+  var unknown=SharedDiagnosticReport.FromLocalRecord(Detailed(type:"PRIVATE_CUSTOM_EXCEPTION",storefront:"PRIVATE_STOREFRONT"),2)!;
+  check(unknown.ExceptionType=="unknown"&&unknown.Storefront=="unknown"&&!unknown.PayloadPreview().Contains("PRIVATE"),"sharing_v2_unknown_exception_and_storefront_never_escape_as_free_text");
+  var observed=JsonNode.Parse(Detailed())!.AsObject();observed.Remove("game_build");observed["observed_pe_build"]="12345678-01234000";
+  var observedReport=SharedDiagnosticReport.FromLocalRecord(observed.ToJsonString(),2)!;
+  check(observedReport.Build=="12345678-01234000"&&observedReport.BuildSource=="observed_pe"&&observedReport.ValidMetadata()&&!(observedReport with{BuildSource="verified_session"}).ValidMetadata(),"sharing_v2_observed_pe_fingerprint_does_not_claim_verified_support");
+  observed["observed_pe_build"]="PRIVATE_PATH 0x12345678";
+  check(SharedDiagnosticReport.FromLocalRecord(observed.ToJsonString(),2)!.Build==null&&!(observedReport with{Build="12345678-00000000"}).ValidMetadata(),"sharing_v2_observed_pe_rejects_raw_text_addresses_and_zero_image_size");
+  var legacy=SharedDiagnosticReport.FromLocalRecord(Detailed())!;
+  using(var json=JsonDocument.Parse(JsonSerializer.Serialize(legacy,SharedDiagnosticReport.Json)))check(json.RootElement.EnumerateObject().Count()==10&&legacy.Schema==1,"sharing_existing_collector_defaults_to_exact_legacy_ten_field_wire_contract");
+  check(detailed.Fingerprint!=SharedDiagnosticReport.FromLocalRecord(Detailed(type:"System.IO.IOException"),2)!.Fingerprint&&detailed.Fingerprint!=SharedDiagnosticReport.FromLocalRecord(Detailed(eventName:"unhandled_domain"),2)!.Fingerprint,"sharing_v2_separates_application_error_kinds_and_failure_stages");
+  check(SharedDiagnosticReport.Classify("Rust 엔진 실행 파일을 찾을 수 없습니다.")=="engine_missing","sharing_korean_missing_engine_error_uses_actionable_code");
+  string incompatible=Path.Combine(root,"detailed-on-legacy-collector");var incompatibleHandler=new FakeHandler();
+  using(var client=Client(incompatible,incompatibleHandler)){client.SetEnabled(true);File.WriteAllText(Path.Combine(incompatible,"pending-"+detailed.ReportId+".json"),JsonSerializer.Serialize(detailed,SharedDiagnosticReport.Json));await client.SendPendingAsync();check(incompatibleHandler.Requests.Count==0&&Pending(incompatible)==0,"sharing_even_valid_v2_queue_cannot_send_to_v1_configured_collector");}
+  string folder=Path.Combine(root,"detailed-consent");var handler=new FakeHandler();var approved=new List<string>();
+  using(var client=Client(folder,handler,Collector with{ReportSchema=2}))using(var gate=new DiagnosticErrorConsentGate(client,(report,_)=>{approved.Add(report.PayloadPreview());return Task.FromResult(true);})){ 
+   await gate.ObserveAsync(Detailed());await gate.ObserveAsync(Detailed(eventName:"unobserved_task",type:"System.IO.IOException"));
+   check(approved.Count==2&&handler.Requests.Count==2&&approved.Zip(handler.Requests).All(pair=>JsonNode.DeepEquals(JsonNode.Parse(pair.First),JsonNode.Parse(pair.Second.Body))),"sharing_v2_sends_exact_reviewed_payload_including_report_id_and_new_errors_require_consent");
+  }
+  folder=Path.Combine(root,"detailed-refused");handler=new();
+  using(var client=Client(folder,handler,Collector with{ReportSchema=2}))using(var gate=new DiagnosticErrorConsentGate(client,(_,_)=>Task.FromResult(false))){await gate.ObserveAsync(Detailed());await client.SendPendingAsync();check(handler.Requests.Count==0&&Pending(folder)==0&&!client.Enabled,"sharing_v2_refusal_performs_no_network_or_outbox_write");}
+  folder=Path.Combine(root,"detailed-schema-change");
+  using(var client=Client(folder,new())){client.SetEnabled(true);client.EnqueueApproved(Record());}
+  handler=new();
+  using(var client=Client(folder,handler,Collector with{ReportSchema=2}))using(var gate=new DiagnosticErrorConsentGate(client,(_,_)=>Task.FromResult(true))){
+   await client.SendPendingAsync();check(!client.Enabled&&handler.Requests.Count==0&&Pending(folder)==1,"sharing_schema_change_blocks_prior_consent_without_network_negotiation");
+   await gate.ObserveAsync(Detailed());check(handler.Requests.Count==1&&Pending(folder)==0&&JsonNode.Parse(handler.Requests[0].Body)!["schema"]!.GetValue<int>()==2,"sharing_schema_change_discards_old_outbox_only_after_new_explicit_approval");
+  }
+  folder=Path.Combine(root,"detailed-tampered");handler=new();
+  using(var client=Client(folder,handler,Collector with{ReportSchema=2})){
+   client.SetEnabled(true);Directory.CreateDirectory(folder);
+   foreach(string key in new[]{"failure_stage","exception_type","build_source","storefront"}){
+    var row=JsonNode.Parse(JsonSerializer.Serialize(detailed,SharedDiagnosticReport.Json))!.AsObject();string id=Guid.NewGuid().ToString("N");row["report_id"]=id;row[key]="PRIVATE";File.WriteAllText(Path.Combine(folder,"pending-"+id+".json"),row.ToJsonString());
+   }
+   await client.SendPendingAsync();check(handler.Requests.Count==0&&Pending(folder)==0,"sharing_v2_tampered_free_text_metadata_is_removed_without_transmission");
+  }
+  string config=Path.Combine(root,"detailed-collector.json");
+  File.WriteAllText(config,JsonSerializer.Serialize(new{ingest_url=Collector.IngestUrl,privacy_url=Collector.PrivacyUrl,destination="private",report_schema=2}));
+  check(DiagnosticCollector.Read(config)?.ReportSchema==2,"sharing_distributor_must_explicitly_configure_v2_after_collector_rollout");
+  File.WriteAllText(config,JsonSerializer.Serialize(new{ingest_url=Collector.IngestUrl,privacy_url=Collector.PrivacyUrl,destination="private",report_schema=3}));
+  check(DiagnosticCollector.Read(config)==null,"sharing_unknown_protocol_configuration_is_rejected");
  }
  private static async Task TestPerErrorConsent(string root,Action<bool,string> check)
  {

@@ -136,6 +136,7 @@ impl SearchCondition {
         if self.source == Source::Field {
             return detail.map(|d| self.number(d.fields.iter().find(|f| f.key == self.key).map(|f| f.value)));
         }
+        if e.employment().is_none() && matches!(self.key.as_str(),"employed"|"club"|"role"|"group") {return Some(false);}
         Some(match self.key.as_str() {
             "id" => self.number(Some(e.id as f64)),
             "nationality_id" => self.number(e.nationality_id.map(|v| v as f64)),
@@ -151,7 +152,7 @@ impl SearchCondition {
             },
             "club" => self.text(&e.club), "role" => self.text(&e.role), "group" => self.text(&e.group),
             "football_category" => self.text(e.football_category.key()),
-            "employed" => self.value.as_bool().is_some_and(|v| if self.op == Op::Ne { e.club_id.is_some() != v } else { e.club_id.is_some() == v }),
+            "employed" => e.employment().is_some_and(|employed|self.value.as_bool().is_some_and(|v| if self.op == Op::Ne { employed != v } else { employed == v })),
             _ => false,
         })
     }

@@ -38,12 +38,17 @@ public static class UiScale
  internal static void ConfigureWindow(Window window)
  {
   if (window is MainWindow or CoachOverlayWindow || window.Content is not FrameworkElement content || content is UiScaleViewport) return;
+  bool fixedReviewActions = window is ScalarReviewWindow;
   window.Content = null;
   window.Content = new UiScaleViewport
   {
    // Retain the dialog's design minimum. The native window may be smaller on a high-DPI monitor.
-   MinimumContentWidth = Math.Max(320, window.MinWidth - 16),
-   MinimumContentHeight = Math.Max(200, window.MinHeight - 40),
+   MinimumContentWidth = fixedReviewActions ? 0 : Math.Max(320, window.MinWidth - 16),
+   MinimumContentHeight = fixedReviewActions ? 0 : Math.Max(200, window.MinHeight - 40),
+   // Review rows scroll inside the dialog. Keep its wrapping footer in the
+   // available area instead of scrolling the complete dialog and its actions.
+   HorizontalScrollBarVisibility = fixedReviewActions ? System.Windows.Controls.ScrollBarVisibility.Disabled : System.Windows.Controls.ScrollBarVisibility.Auto,
+   VerticalScrollBarVisibility = fixedReviewActions ? System.Windows.Controls.ScrollBarVisibility.Disabled : System.Windows.Controls.ScrollBarVisibility.Auto,
    Content = content
   };
   // The owner has already been fitted to its monitor, including Windows DPI scaling.

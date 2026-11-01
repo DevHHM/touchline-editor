@@ -7,6 +7,12 @@ use anyhow::{Context, Result, bail, ensure};
 use std::collections::{HashMap, HashSet};
 pub mod watch;
 pub(crate) mod discovery;
+#[cfg(feature = "fm27-health-experiment")]
+pub(crate) mod health;
+#[cfg(feature = "fm27-health-experiment")]
+pub(crate) mod bans;
+#[cfg(feature = "fm27-transfer-experiment")]
+pub(crate) mod transfer_experiment;
 
 pub mod profiles;
 /// Legacy default used by old snapshots/tests, not a global connection grant.
@@ -18,6 +24,18 @@ pub struct DetectedBuild {
     pub image_size: u32,
     pub profile: Option<&'static profiles::BuildProfile>,
 }
+/// Header identity observed before later validation. This never grants access.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ObservedBuild {
+    pub timestamp: u32,
+    pub image_size: u32,
+}
+impl std::fmt::Display for ObservedBuild {
+    fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result {
+        write!(f,"관찰된 FM 빌드 {:08X}-{:08X}",self.timestamp,self.image_size)
+    }
+}
+impl std::error::Error for ObservedBuild {}
 fn read_pe_identity(p: &Process, base: u64) -> Result<(u32,u32)> {
     read_pe_identity_with(base,|address,size|p.read(address,size))
 }
@@ -41,10 +59,12 @@ pub fn detect_build(p: &Process,m: &Module)->Result<DetectedBuild> {
 }
 fn detect_build_with(m:&Module,mut read:impl FnMut(u64,usize)->Result<Vec<u8>>)->Result<DetectedBuild> {
     let (timestamp,image_size)=read_pe_identity_with(m.base,&mut read)?;
-    ensure!(image_size==m.size,"FM 모듈 이미지 크기가 헤더와 다릅니다");
-    let profile=profiles::identify(timestamp,image_size);
-    if let Some(profile)=profile {profile.verify_code_with(m.base,read)?;}
-    Ok(DetectedBuild{timestamp,image_size,profile})
+    (|| {
+        ensure!(image_size==m.size,"FM 모듈 이미지 크기가 헤더와 다릅니다");
+        let profile=profiles::identify(timestamp,image_size);
+        if let Some(profile)=profile {profile.verify_code_with(m.base,read)?;}
+        Ok(DetectedBuild{timestamp,image_size,profile})
+    })().with_context(||ObservedBuild{timestamp,image_size})
 }
 fn require_read_profile(build:&DetectedBuild)->Result<&'static profiles::BuildProfile> {
     let profile=build.profile.ok_or_else(||anyhow::anyhow!(profiles::UnsupportedBuild {
@@ -831,12 +851,186 @@ fn vector(p: &Process, a: u64, max: u64) -> Result<Vec<u64>> {
         .map(|x| u64::from_le_bytes(x.try_into().unwrap()))
         .collect())
 }
+
+#[derive(Clone, Debug)]
+enum StaffAffiliation {
+    Unemployed,
+    Employed { club_id:u32, club:String, team_kind:u8, job:u8, category:FootballCategory },
+    Unknown,
+}
+fn apply_staff_affiliation(entity:&mut Entity, affiliation:&StaffAffiliation) {
+    match affiliation {
+        StaffAffiliation::Unemployed => {
+            entity.club_id=None;entity.club.clear();entity.group="무소속".into();entity.role="무직".into();
+            entity.football_category=FootballCategory::Unknown;
+        }
+        StaffAffiliation::Employed {club_id,club,team_kind,job,category} => {
+            entity.club_id=Some(*club_id);entity.club=club.clone();entity.group=contract_group(true,*team_kind);
+            // A zero job is missing role evidence. Keep it empty so negative
+            // search comparisons cannot turn an unknown job into a match.
+            entity.role=if *job==0 {String::new()} else {job_label(*job)};entity.football_category=*category;
+        }
+        StaffAffiliation::Unknown => {
+            entity.club_id=None;entity.club.clear();entity.group=STAFF_AFFILIATION_UNKNOWN.into();
+            entity.role="직무 미확인".into();entity.football_category=FootballCategory::Unknown;
+        }
+    }
+}
+fn require_staff_affiliation_profile(session:&Session)->Result<()> {
+    ensure!(profiles::profile_for_session(session).is_some_and(|p|p.read_verified &&
+        (p.id==profiles::FM26.id || p.id==profiles::FM27.id)),"스태프 소속을 읽을 빌드가 검증되지 않았습니다");
+    Ok(())
+}
+/// A cache belongs to one observation phase, never to a session or UI view.
+/// Aligned reads coalesce the many tiny relationship reads. Unreadable pages
+/// fall back to the exact requested range, so a nearby inaccessible byte does
+/// not turn an otherwise readable relationship into Unknown.
+struct StaffReadPages<'a> {
+    read:&'a dyn Fn(u64,usize)->Result<Vec<u8>>,
+    pages:std::cell::RefCell<HashMap<u64,Option<Vec<u8>>>>,
+}
+impl<'a> StaffReadPages<'a> {
+    const PAGE:usize=4096;
+    const MAX_PAGES:usize=8192; // 32 MiB, including failed-page entries.
+    fn new(read:&'a dyn Fn(u64,usize)->Result<Vec<u8>>)->Self {Self {read,pages:Default::default()}}
+    fn clear(&self) {self.pages.borrow_mut().clear();}
+    fn read(&self,address:u64,size:usize)->Result<Vec<u8>> {
+        ensure!(size<=Self::PAGE&&address.checked_add(size as u64).is_some(),"스태프 소속 읽기 범위 오류");
+        let mut bytes=Vec::with_capacity(size);let mut cursor=address;
+        while bytes.len()<size {
+            let page=cursor&!(Self::PAGE as u64-1);let offset=(cursor-page) as usize;
+            let take=(size-bytes.len()).min(Self::PAGE-offset);
+            if !self.pages.borrow().contains_key(&page) {
+                let value=(self.read)(page,Self::PAGE).ok().filter(|v|v.len()==Self::PAGE);
+                let mut pages=self.pages.borrow_mut();if pages.len()>=Self::MAX_PAGES {pages.clear();}
+                pages.insert(page,value);
+            }
+            let pages=self.pages.borrow();
+            let Some(Some(raw))=pages.get(&page) else {
+                drop(pages);return (self.read)(address,size);
+            };
+            bytes.extend_from_slice(&raw[offset..offset+take]);cursor+=take as u64;
+        }
+        Ok(bytes)
+    }
+}
+/// Only identity and primary-contract links; no staff attributes or native role-list claims.
+struct StaffAffiliationCapture<'a> {
+    session:&'a Session,
+    registry_end:u64,
+    read:&'a dyn Fn(u64,usize)->Result<Vec<u8>>,
+    info:&'a dyn Fn(u64)->Result<(u32,String)>,
+    name:&'a dyn Fn(u64)->String,
+    club_metadata:HashMap<u64,(u32,String,FootballCategory)>,
+    types:HashMap<u64,(u32,String)>,
+    teams:HashMap<u64,(u8,u64)>,
+    clubs:HashMap<u64,(u32,String,FootballCategory)>,
+    guards:Vec<Guard>,
+    guarded_values:HashMap<(u64,usize),usize>,
+}
+impl StaffAffiliationCapture<'_> {
+    fn guarded(&mut self,address:u64,size:usize)->Result<Vec<u8>> {
+        if let Some(i)=self.guarded_values.get(&(address,size)) {return Ok(self.guards[*i].expected.clone());}
+        let raw=(self.read)(address,size)?;ensure!(raw.len()==size,"스태프 소속 읽기 길이 불일치");
+        self.guarded_values.insert((address,size),self.guards.len());
+        self.guards.push(Guard {address,expected:raw.clone()});Ok(raw)
+    }
+    fn ptr(value:u64)->Result<u64> {ensure!(pointer(value)==value&&value!=0&&value%8==0,"스태프 소속 포인터 미확인");Ok(value)}
+    fn typed(&mut self,vtable:u64,offset:u32,names:&[&str])->Result<()> {
+        if !self.types.contains_key(&vtable) {self.types.insert(vtable,(self.info)(vtable)?);}
+        let (actual,name)=&self.types[&vtable];
+        ensure!(*actual==offset&&names.contains(&name.as_str()),"스태프 소속 객체 유형 미확인");Ok(())
+    }
+    fn object(&mut self,address:u64,name:&str)->Result<u32> {
+        Self::ptr(address)?;let raw=self.guarded(address,16)?;self.typed(word64(&raw,0),0,&[name])?;
+        let uid=word32(&raw,12);ensure!(uid>0&&uid<0x8000_0000,"스태프 소속 객체 ID 미확인");Ok(uid)
+    }
+    fn staff(&mut self,entity:&Entity)->Result<StaffAffiliation> {
+        ensure!(entity.kind==EntityKind::Staff,"스태프 대상이 아닙니다");
+        let index=entity.index.context("스태프 인물 목록 신원 미확인")?;
+        let slot=self.session.registry_begin.checked_add(index as u64*8).context("스태프 목록 범위 오류")?;
+        ensure!(slot<self.registry_end,"스태프 목록 범위가 변경됐습니다");
+        ensure!(word64(&self.guarded(slot,8)?,0)==entity.address,"스태프 인물 목록 연결이 변경됐습니다");
+        let raw=self.guarded(entity.address,16)?;
+        ensure!(word32(&raw,8)==index&&word32(&raw,12)==entity.id&&entity.address.checked_sub(0x100)==Some(entity.base),"스태프 신원이 변경됐습니다");
+        self.typed(word64(&raw,0),0x100,&[".?AVACTUAL_NON_PLAYER@db@@"])?;
+        let contract=word64(&self.guarded(entity.address+0xA8,8)?,0);
+        if contract==0 {return Ok(StaffAffiliation::Unemployed);}
+        Self::ptr(contract)?;
+        let vtable=word64(&self.guarded(contract,8)?,0);
+        self.typed(vtable,0,&[".?AVFULL_CONTRACT@db@@",".?AVBASIC_CONTRACT@db@@"])?;
+        ensure!(word64(&self.guarded(contract+8,8)?,0)==entity.address,"현재 계약의 인물 연결이 다릅니다");
+        let team=Self::ptr(word64(&self.guarded(contract+0x10,8)?,0))?;
+        let job=self.guarded(contract+0x26,1)?[0];
+        if !self.teams.contains_key(&team) {
+            self.object(team,".?AVTEAM@db@@")?;
+            let kind=self.guarded(team+0x28,1)?[0];
+            let club=Self::ptr(word64(&self.guarded(team+0x30,8)?,0))?;
+            self.teams.insert(team,(kind,club));
+        }
+        let (team_kind,club)=self.teams[&team];
+        if !self.clubs.contains_key(&club) {
+            let uid=self.object(club,".?AVCLUB@db@@")?;
+            let (name,category)=self.club_metadata.get(&club).filter(|(id,_,_)|*id==uid)
+                .map(|(_,name,category)|(name.clone(),*category)).unwrap_or_else(||((self.name)(club),FootballCategory::Unknown));
+            self.clubs.insert(club,(uid,if name.is_empty(){format!("구단 {uid}")}else{name},category));
+        }
+        let (club_id,club,category)=self.clubs[&club].clone();
+        Ok(StaffAffiliation::Employed {club_id,club,team_kind,job,category})
+    }
+    fn verify(&self)->Result<()> {
+        for guard in &self.guards {ensure!((self.read)(guard.address,guard.expected.len())?==guard.expected,"스태프 소속을 읽는 동안 정보가 변경됐습니다");}
+        Ok(())
+    }
+}
+fn capture_staff_affiliations_with(
+    index:&Index,registry_end:u64,read:&dyn Fn(u64,usize)->Result<Vec<u8>>,
+    info:&dyn Fn(u64)->Result<(u32,String)>,name:&dyn Fn(u64)->String,end:&dyn Fn()->Result<u64>,
+)->Result<Vec<(usize,StaffAffiliation)>> {
+    require_staff_affiliation_profile(&index.session)?;
+    let pages=StaffReadPages::new(read);let read_cached=|address,size|pages.read(address,size);
+    let mut capture=StaffAffiliationCapture {session:&index.session,registry_end,read:&read_cached,info,name,
+        club_metadata:index.entities.iter().filter(|e|e.kind==EntityKind::Club)
+            .map(|e|(e.address,(e.id,e.name.clone(),e.football_category))).collect(),
+        types:HashMap::new(),teams:HashMap::new(),clubs:HashMap::new(),guards:vec![],guarded_values:HashMap::new()};
+    let rows=index.entities.iter().enumerate().filter(|(_,e)|e.kind==EntityKind::Staff)
+        .map(|(i,e)|(i,capture.staff(e).unwrap_or(StaffAffiliation::Unknown))).collect();
+    // Every guarded byte must be observed again. Reusing initial pages here
+    // would make torn-read validation silently compare a snapshot to itself.
+    pages.clear();
+    capture.verify()?;ensure!(end()?==registry_end,"스태프 인물 목록 범위가 변경됐습니다");Ok(rows)
+}
+fn apply_staff_affiliations(index:&mut Index,rows:Vec<(usize,StaffAffiliation)>) {
+    let unknown=rows.iter().filter(|(_,a)|matches!(a,StaffAffiliation::Unknown)).count();
+    for (i,affiliation) in rows {apply_staff_affiliation(&mut index.entities[i],&affiliation);}
+    index.warnings.retain(|w|!w.starts_with("스태프 소속:"));
+    if unknown>0 {index.warnings.push(format!("스태프 소속: {unknown}명의 현재 계약을 확인하지 못해 소속·직무를 미확인으로 표시합니다. 무직으로 간주하지 않습니다."));}
+}
+pub fn refresh_staff_affiliations(index:&mut Index)->Result<()> {
+    require_staff_affiliation_profile(&index.session)?;
+    let p=Process::open(index.session.pid,false)?;validate_with(&p,&index.session)?;
+    let (_,end)=registry(&p,index.session.module_base,index.session.db)?;
+    let rows=capture_staff_affiliations_with(index,end,&|a,n|p.read(a,n),
+        &|vt|type_info(&p,index.session.module_base,index.session.module_size,vt),&|club|club_name(&p,club),
+        &||Ok(registry(&p,index.session.module_base,index.session.db)?.1))?;
+    validate_with(&p,&index.session)?;apply_staff_affiliations(index,rows);Ok(())
+}
+fn staff_detail_affiliation(p:&Process,session:&Session,entity:&Entity)->Result<(StaffAffiliation,Vec<Guard>)> {
+    require_staff_affiliation_profile(session)?;
+    let (_,registry_end)=registry(p,session.module_base,session.db)?;
+    let read=|a,n|p.read(a,n);let info=|vt|type_info(p,session.module_base,session.module_size,vt);let name=|club|club_name(p,club);
+    let mut capture=StaffAffiliationCapture {session,registry_end,read:&read,info:&info,name:&name,
+        club_metadata:HashMap::new(),types:HashMap::new(),teams:HashMap::new(),clubs:HashMap::new(),
+        guards:vec![],guarded_values:HashMap::new()};
+    let mut affiliation=capture.staff(entity).unwrap_or(StaffAffiliation::Unknown);capture.verify()?;
+    ensure!(registry(p,session.module_base,session.db)?.1==registry_end,"스태프 인물 목록 범위가 변경됐습니다");
+    if let StaffAffiliation::Employed {club_id,category,..}=&mut affiliation {
+        if entity.club_id==Some(*club_id) {*category=entity.football_category;}
+    }
+    Ok((affiliation,capture.guards))
+}
 fn mark_squad(p: &Process, index: &mut Index, club: u64, clubid: u32) {
     let cname = club_name(p, club);
-    let club_categories: HashMap<u64, FootballCategory> = index.entities.iter()
-        .filter(|e| e.kind == EntityKind::Club)
-        .map(|e| (e.address, e.football_category))
-        .collect();
     // A previous club view may have shown this player as an incoming loan.
     // Recover the actual employer before applying this club's roster so view
     // order cannot hide the parent's outgoing-loan row or lose the loan badge.
@@ -901,23 +1095,6 @@ fn mark_squad(p: &Process, index: &mut Index, club: u64, clubid: u32) {
         }
     }
     assign_memberships(&mut index.entities, &memberships, clubid, &cname);
-    // Staff are not members of the player roster vector. Their explicit
-    // contract team is the assignment, and can change between refreshes.
-    for e in index
-        .entities
-        .iter_mut()
-        .filter(|e| e.kind == EntityKind::Staff && e.club_id == Some(clubid))
-    {
-        let (_, team, employer) = club_for(p, e.address);
-        // Staff sex is irrelevant: a male coach employed in women's football
-        // inherits the women's club category. A missing employer stays unknown.
-        e.football_category = club_categories.get(&employer).copied().unwrap_or_default();
-        e.group = if employer == club {
-            contract_group(team != 0, p.u8(team + 0x28).unwrap_or(255))
-        } else {
-            "소속팀 미확인".into()
-        };
-    }
     for e in index
         .entities
         .iter_mut()
@@ -964,7 +1141,8 @@ pub fn refresh_squad(index: &mut Index) -> Result<()> {
         .session
         .own_club_id
         .context("내 구단이 식별되지 않았습니다")?;
-    refresh_club_squad(index, id)
+    refresh_club_squad(index, id)?;
+    refresh_staff_affiliations(index)
 }
 
 /// Resolve a club roster on demand instead of treating a player's contract
@@ -1093,11 +1271,13 @@ pub fn detail(s: &Session, e: &Entity) -> Result<Detail> {
             expected: p.read(e.base, 8)?,
         });
     }
-    let (c, t, cl) = club_for(&p, e.address);
-    guards.push(Guard {
+    // Staff affiliations use the strict primary-contract reader below; the
+    // permissive display helper must not turn a failed read into unemployment.
+    let (c, t, cl) = if e.kind==EntityKind::Staff {(0,0,0)}else{club_for(&p, e.address)};
+    if e.kind!=EntityKind::Staff {guards.push(Guard {
         address: e.address + 0xA8,
         expected: p.read(e.address + 0xA8, 8)?,
-    });
+    });}
     if c > 0 {
         guards.push(Guard {
             address: c + 0x10,
@@ -1122,6 +1302,14 @@ pub fn detail(s: &Session, e: &Entity) -> Result<Detail> {
         guards,
         notes: vec!["이름·국적·관계는 전용 편집에서 대상과 변경 내용을 검토합니다".into()],
     };
+    if e.kind==EntityKind::Staff {
+        let (affiliation,guards)=staff_detail_affiliation(&p,s,e)?;
+        apply_staff_affiliation(&mut d.entity,&affiliation);
+        for guard in guards {if !d.guards.contains(&guard) {d.guards.push(guard);}}
+        if matches!(affiliation,StaffAffiliation::Unknown) {
+            d.notes.push("현재 주계약의 소속·직무를 확인하지 못했습니다. 무직을 뜻하지 않습니다.".into());
+        }
+    }
     let legacy = crate::compatibility::legacy_layout(s);
     if !legacy && e.kind == EntityKind::Person {
         d.entity.age = None;
@@ -1162,6 +1350,157 @@ pub fn detail(s: &Session, e: &Entity) -> Result<Detail> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn put_staff_memory(memory:&mut HashMap<u64,u8>,address:u64,bytes:&[u8]) {
+        for (i,b) in bytes.iter().enumerate() {memory.insert(address+i as u64,*b);}
+    }
+    fn staff_affiliation_fixture(profile:&profiles::BuildProfile)->(Index,HashMap<u64,u8>) {
+        let mut staff=category_row(EntityKind::Staff,Some(11),FootballCategory::Men);
+        staff.id=7;staff.name="Synthetic coach".into();staff.address=0x20100;staff.base=0x20000;staff.index=Some(0);
+        staff.club="A".into();staff.role="코치".into();staff.group="1군".into();staff.ca=Some(100);staff.pa=Some(150);
+        let mut player=staff.clone();player.kind=EntityKind::Player;player.id=8;player.address=0xDEAD000;player.base=0xDEAD000;
+        let mut clubs=vec![];
+        for (id,address,name,category) in [(11,0x50000,"A",FootballCategory::Men),(22,0x51000,"B",FootballCategory::Women)] {
+            let mut club=category_row(EntityKind::Club,Some(id),category);club.id=id;club.name=name.into();club.address=address;club.base=address;clubs.push(club);
+        }
+        let index=Index {session:Session {pid:0,created:0,module_base:0,module_size:profile.image_size,module_stamp:profile.timestamp,
+            db:0,registry_begin:0x10000,game_date:"2026-11-01".into(),profile:profile.label.into(),own_club_id:Some(11)},
+            entities:[vec![staff,player],clubs].concat(),club_leagues:vec![],warnings:vec![]};
+        let mut memory=HashMap::new();
+        for (address,size) in [(0x20100,16),(0x30000,0x28),(0x40000,0x38),(0x41000,0x38),(0x50000,16),(0x51000,16)] {put_staff_memory(&mut memory,address,&vec![0;size]);}
+        for (address,value) in [(0x10000,0x20100u64),(0x20100,0x60000),(0x201A8,0x30000),(0x30000,0x61000),
+            (0x30008,0x20100),(0x30010,0x40000),(0x40000,0x62000),(0x40030,0x50000),
+            (0x41000,0x62000),(0x41030,0x51000),(0x50000,0x63000),(0x51000,0x63000)] {put_staff_memory(&mut memory,address,&value.to_le_bytes());}
+        for (address,value) in [(0x20108,0u32),(0x2010C,7),(0x4000C,101),(0x4100C,102),(0x5000C,11),(0x5100C,22)] {put_staff_memory(&mut memory,address,&value.to_le_bytes());}
+        put_staff_memory(&mut memory,0x30026,&[2]);put_staff_memory(&mut memory,0x41028,&[18]);
+        (index,memory)
+    }
+    fn staff_fixture_info(vtable:u64)->Result<(u32,String)> {
+        Ok(match vtable {0x60000=>(0x100,".?AVACTUAL_NON_PLAYER@db@@".into()),0x61000=>(0,".?AVFULL_CONTRACT@db@@".into()),
+            0x62000=>(0,".?AVTEAM@db@@".into()),0x63000=>(0,".?AVCLUB@db@@".into()),
+            0x64000=>(0,".?AVBASIC_CONTRACT@db@@".into()),_=>bail!("synthetic unknown RTTI")})
+    }
+    fn refresh_staff_fixture(index:&mut Index,memory:&HashMap<u64,u8>)->Result<()> {
+        let rows=capture_staff_affiliations_with(index,0x10008,&|a,n|read_name_memory(memory,a,n),&staff_fixture_info,
+            &|_|panic!("indexed club names must be reused"),&||Ok(0x10008))?;
+        apply_staff_affiliations(index,rows);Ok(())
+    }
+    fn fill_staff_fixture_pages(memory:&mut HashMap<u64,u8>) {
+        let pages=memory.keys().map(|a|*a&!4095).collect::<std::collections::HashSet<_>>();
+        for page in pages {for offset in 0..4096 {memory.entry(page+offset).or_insert(0);}}
+    }
+    #[test]
+    fn staff_affiliation_page_reads_coalesce_large_metadata_pass_and_still_observe_fresh_guards() {
+        use std::cell::Cell;
+        let (mut index,mut memory)=staff_affiliation_fixture(&profiles::FM27);let template=index.entities[0].clone();
+        index.entities.retain(|e|e.kind!=EntityKind::Staff);
+        for n in 0..64u32 {
+            let mut e=template.clone();e.id=100+n;e.index=Some(n);e.base=0x80000+n as u64*0x200;e.address=e.base+0x100;
+            let contract=0xA0000+n as u64*0x30;
+            for (a,value) in [(0x10000+n as u64*8,e.address),(e.address,0x60000),(e.address+0xA8,contract),
+                (contract,0x61000),(contract+8,e.address),(contract+0x10,0x40000)] {put_staff_memory(&mut memory,a,&value.to_le_bytes());}
+            put_staff_memory(&mut memory,e.address+8,&n.to_le_bytes());put_staff_memory(&mut memory,e.address+12,&e.id.to_le_bytes());put_staff_memory(&mut memory,contract+0x26,&[2]);
+            index.entities.push(e);
+        }
+        fill_staff_fixture_pages(&mut memory);let calls=Cell::new(0);let bytes=Cell::new(0);
+        let rows=capture_staff_affiliations_with(&index,0x10200,&|a,n| {calls.set(calls.get()+1);bytes.set(bytes.get()+n);read_name_memory(&memory,a,n)},
+            &staff_fixture_info,&|_|String::new(),&||Ok(0x10200)).unwrap();
+        assert_eq!(rows.len(),64);assert!(rows.iter().all(|(_,a)|matches!(a,StaffAffiliation::Employed {club_id:11,..})));
+        // The narrow reader would need >900 RPM calls for these same people.
+        // Each page is fetched once in each independent observation phase.
+        assert!(calls.get()<=30,"{} underlying reads",calls.get());assert_eq!(bytes.get(),calls.get()*4096);
+        // A mutation visible only when a page is fetched a second time must be
+        // caught; cached bytes from capture must not satisfy final validation.
+        let job_page_reads=Cell::new(0);
+        let result=capture_staff_affiliations_with(&index,0x10200,&|a,n| {
+            let mut raw=read_name_memory(&memory,a,n)?;
+            if a==0xA0000 {job_page_reads.set(job_page_reads.get()+1);if job_page_reads.get()>1 {raw[0x26]=14;}}
+            Ok(raw)
+        },&staff_fixture_info,&|_|String::new(),&||Ok(0x10200));
+        assert!(result.is_err());assert_eq!(job_page_reads.get(),2);
+    }
+    #[test]
+    fn staff_page_reads_cross_boundaries_fall_back_exactly_and_bound_retained_memory() {
+        use std::cell::Cell;
+        let calls=Cell::new(0);let read=|a,n| {calls.set(calls.get()+1);Ok(vec![if a==0x20000{1}else{2};n])};
+        let pages=StaffReadPages::new(&read);
+        assert_eq!(pages.read(0x20FFC,8).unwrap(),[1,1,1,1,2,2,2,2]);
+        pages.read(0x20010,8).unwrap();assert_eq!(calls.get(),2);
+        pages.clear();pages.read(0x20010,8).unwrap();assert_eq!(calls.get(),3);
+        // Failed page fetches are remembered within a phase, but readable exact
+        // ranges still succeed even if surrounding bytes cannot be read.
+        let failures=Cell::new(0);let exact=Cell::new(0);
+        let sparse=|_,n| {if n==4096 {failures.set(failures.get()+1);bail!("synthetic unreadable neighbouring bytes");}exact.set(exact.get()+1);Ok(vec![7;n])};
+        let sparse_pages=StaffReadPages::new(&sparse);
+        for _ in 0..3 {assert_eq!(sparse_pages.read(0x20010,8).unwrap(),vec![7;8]);}
+        assert_eq!((failures.get(),exact.get()),(1,3));sparse_pages.clear();sparse_pages.read(0x20010,8).unwrap();assert_eq!(failures.get(),2);
+        // Populate failure entries without allocating 32 MiB just for this
+        // bound test; successful and failed entries use the same admission cap.
+        pages.clear();for n in 0..StaffReadPages::MAX_PAGES {pages.pages.borrow_mut().insert(0x30000+n as u64*4096,None);}
+        pages.read(0x10000,8).unwrap();assert_eq!(pages.pages.borrow().len(),1);
+    }
+    #[test]
+    fn staff_affiliation_move_and_club_search_order_use_current_primary_contract() {
+        for profile in [&profiles::FM26,&profiles::FM27] {for order in [[11,22],[22,11]] {
+            let (mut index,mut memory)=staff_affiliation_fixture(profile);
+            let unaffected=serde_json::to_value(&index.entities[1]).unwrap();
+            put_staff_memory(&mut memory,0x30010,&0x41000u64.to_le_bytes());put_staff_memory(&mut memory,0x30026,&[14]);
+            for club in order {
+                refresh_staff_fixture(&mut index,&memory).unwrap();
+                let rows=index.entities.iter().filter(|e|e.kind==EntityKind::Staff&&e.club_id==Some(club)).collect::<Vec<_>>();
+                assert_eq!(rows.len(),usize::from(club==22));
+                if let Some(e)=rows.first() {assert_eq!((e.club.as_str(),e.role.as_str(),e.group.as_str()),("B","스카우트","U-20"));assert_eq!(e.football_category,FootballCategory::Women);assert_eq!((e.ca,e.pa),(Some(100),Some(150)));}
+            }
+            assert_eq!(serde_json::to_value(&index.entities[1]).unwrap(),unaffected);
+        }}
+    }
+    #[test]
+    fn staff_affiliation_job_change_and_known_unemployment_clear_old_metadata() {
+        let (mut index,mut memory)=staff_affiliation_fixture(&profiles::FM27);
+        put_staff_memory(&mut memory,0x30026,&[20]);refresh_staff_fixture(&mut index,&memory).unwrap();
+        assert_eq!(index.entities[0].role,"수석 코치");
+        put_staff_memory(&mut memory,0x30026,&[0]);refresh_staff_fixture(&mut index,&memory).unwrap();
+        assert_eq!(index.entities[0].employment(),Some(true));assert!(index.entities[0].role.is_empty());
+        put_staff_memory(&mut memory,0x201A8,&0u64.to_le_bytes());refresh_staff_fixture(&mut index,&memory).unwrap();
+        let e=&index.entities[0];assert_eq!(e.employment(),Some(false));assert!(e.club.is_empty());assert_eq!(e.group,"무소속");assert_eq!(e.role,"무직");assert_eq!(e.football_category,FootballCategory::Unknown);
+    }
+    #[test]
+    fn staff_affiliation_bad_identity_contract_owner_and_links_are_unknown_not_unemployed() {
+        for (address,bytes) in [(0x10000,0x20200u64.to_le_bytes().to_vec()),(0x2010C,9u32.to_le_bytes().to_vec()),
+            (0x201A8,0x90000u64.to_le_bytes().to_vec()),(0x30000,0xDEAD0u64.to_le_bytes().to_vec()),
+            (0x30008,0x20200u64.to_le_bytes().to_vec()),(0x30010,0u64.to_le_bytes().to_vec()),(0x40030,0u64.to_le_bytes().to_vec())] {
+            let (mut index,mut memory)=staff_affiliation_fixture(&profiles::FM27);put_staff_memory(&mut memory,address,&bytes);
+            refresh_staff_fixture(&mut index,&memory).unwrap();let e=&index.entities[0];
+            assert_eq!(e.employment(),None);assert_eq!(e.club_id,None);assert!(e.club.is_empty());assert_eq!(e.role,"직무 미확인");
+            assert!(index.warnings.iter().any(|w|w.starts_with("스태프 소속:")));
+        }
+    }
+    #[test]
+    fn staff_affiliation_torn_job_or_registry_end_does_not_publish_partial_updates() {
+        use std::cell::Cell;
+        for shrink in [false,true] {
+            let (mut index,memory)=staff_affiliation_fixture(&profiles::FM27);let before=serde_json::to_value(&index).unwrap();let reads=Cell::new(0);
+            let rows=capture_staff_affiliations_with(&index,0x10008,&|a,n| {
+                if a==0x30026 {reads.set(reads.get()+1);if !shrink&&reads.get()>1 {return Ok(vec![14]);}}
+                read_name_memory(&memory,a,n)
+            },&staff_fixture_info,&|_|String::new(),&||Ok(if shrink{0x10000}else{0x10008}));
+            assert!(rows.is_err());assert_eq!(serde_json::to_value(&index).unwrap(),before);
+            // Confirm an unsupported profile cannot invoke any metadata read.
+            index.session.module_stamp+=1;
+            assert!(capture_staff_affiliations_with(&index,0x10008,&|_,_|panic!("profile gate must run first"),&staff_fixture_info,&|_|String::new(),&||Ok(0x10008)).is_err());
+        }
+    }
+    #[test]
+    fn staff_affiliation_guards_are_deterministic_and_exclude_editable_staff_attributes() {
+        let (index,memory)=staff_affiliation_fixture(&profiles::FM27);let read=|a,n|read_name_memory(&memory,a,n);let name=|_|String::new();
+        let mut baseline=None;
+        for _ in 0..2 {
+            let mut capture=StaffAffiliationCapture {session:&index.session,registry_end:0x10008,read:&read,info:&staff_fixture_info,name:&name,
+                club_metadata:HashMap::new(),types:HashMap::new(),teams:HashMap::new(),clubs:HashMap::new(),guards:vec![],guarded_values:HashMap::new()};
+            capture.staff(&index.entities[0]).unwrap();capture.verify().unwrap();
+            for g in &capture.guards {assert!(!(g.address<0x200DE && g.address+g.expected.len() as u64>0x200DA));assert!(!(g.address<0x20054&&g.address+g.expected.len() as u64>0x20010));}
+            if let Some(old)=&baseline {assert_eq!(&capture.guards,old);} else {baseline=Some(capture.guards);}
+        }
+    }
     #[test]
     fn person_registry_accepts_fm27_person_rtti_families_including_journalists() {
         // Concrete PERSON-derived types from the verified FM27 game_plugin.dll

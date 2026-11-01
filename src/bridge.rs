@@ -15,6 +15,8 @@ mod relations;
 mod staff_review;
 mod name_localization;
 mod connection;
+#[cfg(feature = "fm27-health-experiment")]
+mod health_experiment;
 pub(crate) mod api;
 
 const MAX_LINE: usize = 1024 * 1024;
@@ -35,6 +37,12 @@ enum Preview {
     Freeze(Vec<(Detail, Vec<Edit>)>),
     Relation(crate::relations::RelationPlan),
     NameLocalization(crate::name_localization::Plan),
+    #[cfg(feature = "fm27-health-experiment")]
+    InjuryExperiment { plan: backend::health::InjuryPlan, backup: Option<health_experiment::SaveBackup> },
+    #[cfg(feature = "fm27-health-experiment")]
+    BanExperiment { plan: backend::bans::BanPlan, backup: Option<health_experiment::SaveBackup> },
+    #[cfg(feature = "fm27-transfer-experiment")]
+    TransferExperiment { plan: backend::transfer_experiment::TransferPlan, backup: Option<health_experiment::SaveBackup> },
 }
 struct Pending {
     created: Instant,
@@ -58,6 +66,8 @@ struct Bridge {
     relation_state: relations::RelationState,
     staff_review_state: staff_review::ReviewState,
     connection: connection::Monitor,
+    #[cfg(test)]
+    staff_refresh_hook:Option<fn(&mut Index)->Result<()>>,
 }
 
 fn entity(e: &Entity) -> Value {
@@ -180,10 +190,12 @@ impl Bridge {
             Some(i) => {
                 json!({"connected":true,"live":self.live,"own_club":i.entities.iter().find(|e|e.kind==EntityKind::Club && Some(e.id)==i.session.own_club_id).map(entity),
                 "game_date":i.session.game_date,"counts":counts,"pid":if self.live {Some(i.session.pid)} else {None},"profile":i.session.profile,"warnings":i.warnings,
-                "build_capabilities":crate::compatibility::capabilities(&i.session)})
+                "build_capabilities":crate::compatibility::capabilities(&i.session),
+                "diagnostic_context":if self.live {Some(backend::watch::DiagnosticContext::from_pe(i.session.module_stamp,i.session.module_size))} else {None}})
             }
             None => {
-                json!({"connected":false,"live":false,"own_club":null,"game_date":null,"counts":counts,"pid":null,"profile":backend::PROFILE,"warnings":[]})
+                json!({"connected":false,"live":false,"own_club":null,"game_date":null,"counts":counts,"pid":null,"profile":backend::PROFILE,"warnings":[],
+                    "diagnostic_context":self.connection.diagnostic_context})
             }
         }
     }
@@ -207,7 +219,7 @@ impl Bridge {
     }
     fn read_detail(&mut self, k: EntityKind, id: u32) -> Result<Value> {
         let e = self.find(k, id)?;
-        let d = if self.live {
+        let mut d = if self.live {
             backend::detail(&self.index()?.session, &e)?
         } else {
             load_snapshot_detail(
@@ -216,11 +228,31 @@ impl Bridge {
                 id,
             )?
         };
+        self.remember_staff_affiliation(&mut d.entity);
         // A new detail baseline invalidates existing apply tokens for this entity.
         self.pending.retain(|_,p|!matches!(&p.preview,Preview::Edit{detail,..} if detail.entity.kind==k && detail.entity.id==id));
         let result = self.detail_json(&d);
         self.details.insert((k, id), d);
         Ok(result)
+    }
+    fn refresh_staff_metadata(&mut self, kind:EntityKind)->Result<()> {
+        if self.live && kind==EntityKind::Staff {
+            #[cfg(test)]
+            if let Some(refresh)=self.staff_refresh_hook {return refresh(self.index.as_mut().context("연결 없음")?);}
+            backend::refresh_staff_affiliations(self.index.as_mut().context("연결 없음")?)?;
+        }
+        Ok(())
+    }
+    fn remember_staff_affiliation(&mut self, entity:&mut Entity) {
+        if !self.live || entity.kind!=EntityKind::Staff {return;}
+        let Some(index)=self.index.as_mut() else {return;};
+        if let Some(club)=index.entities.iter().find(|e|e.kind==EntityKind::Club&&Some(e.id)==entity.club_id) {
+            entity.football_category=club.football_category;
+        }
+        if let Some(stored)=index.entities.iter_mut().find(|e|e.kind==EntityKind::Staff&&e.id==entity.id&&e.address==entity.address&&e.base==entity.base&&e.index==entity.index) {
+            stored.club_id=entity.club_id;stored.club=entity.club.clone();stored.role=entity.role.clone();
+            stored.group=entity.group.clone();stored.football_category=entity.football_category;
+        }
     }
     fn token(&mut self, preview: Preview) -> String {
         self.pending.retain(|_, p| p.created.elapsed() < TOKEN_TTL);
@@ -269,11 +301,14 @@ impl Bridge {
             .map(|_| required_id(a, "club_id"))
             .transpose()?;
         let group = a.get("group").and_then(Value::as_str).unwrap_or("");
+        if a.get("offset").and_then(Value::as_u64).unwrap_or(0)==0 && (k==Some(EntityKind::Staff)||k.is_none()) {
+            self.refresh_staff_metadata(EntityKind::Staff)?;
+        }
         // A contract's team is not necessarily the player's active squad.
         // Refresh one selected club at the start of a paged roster read; later
         // pages use that same index rather than regrouping halfway through it.
         if self.live && a.get("offset").and_then(Value::as_u64).unwrap_or(0) == 0
-            && matches!(k, Some(EntityKind::Player | EntityKind::Staff))
+            && matches!(k, Some(EntityKind::Player))
         {
             if let Some(club_id) = club {
                 backend::refresh_club_squad(self.index.as_mut().context("FM에 연결하세요")?, club_id)?;
@@ -385,6 +420,10 @@ impl Bridge {
     }
     fn dispatch_inner(&mut self, command: &str, a: &Value) -> Result<Value> {
         match command {
+            #[cfg(feature = "fm27-health-experiment")]
+            "injury_test_preview" | "injury_test_apply" | "ban_test_preview" | "ban_test_apply" => self.health_experiment_command(command, a),
+            #[cfg(feature = "fm27-transfer-experiment")]
+            "transfer_test_preview" | "transfer_test_apply" => self.health_experiment_command(command, a),
             "capabilities" => Ok(api::capabilities()),
             "connection_poll" => Ok(self.connection_poll()),
             "connection_reconnect" => self.connection_reconnect(),
@@ -420,7 +459,7 @@ impl Bridge {
             "overlay_detail" => {
                 let id = required_id(a, "id")?;
                 let e = self.find(EntityKind::Staff, id)?;
-                let d = if self.live {
+                let mut d = if self.live {
                     backend::detail(&self.index()?.session, &e)?
                 } else {
                     load_snapshot_detail(
@@ -429,6 +468,7 @@ impl Bridge {
                         id,
                     )?
                 };
+                self.remember_staff_affiliation(&mut d.entity);
                 // A polling overlay must never replace the editor's retained
                 // pre-edit baseline or invalidate its reviewed changes.
                 Ok(self.detail_json(&d))
@@ -725,6 +765,39 @@ mod tests {
         };
         b.details.insert((EntityKind::Player, 7), d.clone());
         (b, d)
+    }
+    pub(super) fn staff_refresh_fixture()->Bridge {
+        let (mut b,mut detail)=fixture();detail.entity.kind=EntityKind::Staff;
+        detail.entity.club_id=Some(11);detail.entity.club="A".into();detail.entity.role="코치".into();detail.entity.group="1군".into();
+        b.index.as_mut().unwrap().entities[0]=detail.entity.clone();b.details.clear();b.details.insert((EntityKind::Staff,7),detail);
+        b.staff_refresh_hook=Some(|index| {
+            index.warnings.push("synthetic staff metadata refresh".into());
+            let e=&mut index.entities[0];e.club_id=Some(22);e.club="B".into();e.role="스카우트".into();e.group="U-20".into();Ok(())
+        });b
+    }
+    #[test]
+    fn staff_search_refreshes_first_page_and_global_scope_without_touching_scalar_baseline() {
+        let mut b=staff_refresh_fixture();
+        let preview=b.dispatch("preview",&json!({"kind":"Staff","id":7,"edits":[{"key":"ca","value":110}]})).unwrap();
+        let token=preview["token"].as_str().unwrap();let baseline=serde_json::to_value(&b.details[&(EntityKind::Staff,7)]).unwrap();
+        b.live=true;
+        let source=b.search(&json!({"kind":"Staff","club_id":11})).unwrap();assert_eq!(source["total"],0);
+        let destination=b.search(&json!({"kind":"Staff","club_id":22})).unwrap();assert_eq!(destination["total"],1);
+        let calls=b.index.as_ref().unwrap().warnings.len();b.search(&json!({"kind":"Staff","offset":1})).unwrap();
+        b.search(&json!({"kind":"Player"})).unwrap();assert_eq!(b.index.as_ref().unwrap().warnings.len(),calls);
+        b.search(&json!({})).unwrap();assert_eq!(b.index.as_ref().unwrap().warnings.len(),calls+1);
+        assert_eq!(serde_json::to_value(&b.details[&(EntityKind::Staff,7)]).unwrap(),baseline);assert!(b.pending.contains_key(token));
+    }
+    #[test]
+    fn staff_detail_index_metadata_update_leaves_retained_baseline_and_token_untouched() {
+        let mut b=staff_refresh_fixture();let baseline=b.details[&(EntityKind::Staff,7)].clone();
+        let preview=b.dispatch("preview",&json!({"kind":"Staff","id":7,"edits":[{"key":"ca","value":110}]})).unwrap();let token=preview["token"].as_str().unwrap();
+        let mut fresh=baseline.entity.clone();fresh.club_id=Some(22);fresh.club="B".into();fresh.role="스카우트".into();fresh.group="U-20".into();
+        b.remember_staff_affiliation(&mut fresh);assert_eq!(b.index.as_ref().unwrap().entities[0].club_id,Some(11));
+        b.live=true;b.remember_staff_affiliation(&mut fresh);
+        assert_eq!(b.index.as_ref().unwrap().entities[0].club_id,Some(22));assert_eq!(b.index.as_ref().unwrap().entities[0].role,"스카우트");
+        assert_eq!(serde_json::to_value(&b.details[&(EntityKind::Staff,7)]).unwrap(),serde_json::to_value(&baseline).unwrap());assert!(b.pending.contains_key(token));
+        fresh.address+=8;fresh.club_id=Some(33);b.remember_staff_affiliation(&mut fresh);assert_eq!(b.index.as_ref().unwrap().entities[0].club_id,Some(22));
     }
     #[test]
     fn offline_preview_cannot_apply_and_is_single_use() {

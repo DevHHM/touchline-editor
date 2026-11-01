@@ -45,6 +45,7 @@ public partial class MainWindow : Window
   InitializeUsability();
   InitializeUpdates();
   InitializeLiveWatch();
+  InitializeTutorial();
   NameCopy.AttachGrid(EntityGrid, item => item as EntityRecord, Status);
   _searchTimer.Tick += async (_,_) => { _searchTimer.Stop(); await SearchAsync(); };
   _scoreTimer.Tick += async (_,_) => { _scoreTimer.Stop(); await RefreshDraftScores(); };
@@ -96,9 +97,11 @@ public partial class MainWindow : Window
     } else await ShowSearchAsync(_kind);
    }
   } catch(Exception ex) { App.Log(ex); Status(ex.Message); if(_qaOutput!=null) { Directory.CreateDirectory(System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(_qaOutput))!); File.WriteAllText(_qaOutput+".error.txt",ex.ToString()); Environment.ExitCode=1; await CloseSafely(); Application.Current.Shutdown(1); } else ShowConnectionProblem(_ready?"error":"engine_error", ex.Message); }
+  ShowFirstLaunchTutorial();
  }
  private void SetSummary(JsonElement data,bool newHistorySession=false)
  {
+  DiagnosticsLog.Current?.ObserveGameContext(data);
   _growthAvailability=ClubGrowthAvailability.FromSummary(data);
   _dataLoaded=data.TryGetProperty("connected",out var connected)&&connected.ValueKind==JsonValueKind.True;SearchScreenButton.IsEnabled=_dataLoaded;
   _recentHistory.UpdateConnection(_dataLoaded,newHistorySession);
@@ -145,9 +148,15 @@ public partial class MainWindow : Window
   if(_busy||_livePollBusy||_bridge==null||!CanLeave())return;
   var dialog=new OpenFileDialog {Title="읽기 전용 스냅샷 열기",Filter="Touchline 데이터 (*.json)|*.json"};
   _liveWatchTimer.Stop();
-  if(dialog.ShowDialog(this)!=true){if(_liveReload.Enabled)_liveWatchTimer.Start();return;}
-  DisableLiveWatch();_reloadContext=null;
-  await Guard(async()=> { await CloseWorkbenches(); await DisposeSearchView(); CloseTools(); await StopDetailViewsAsync(); ClearDetail(); SetSummary(await _bridge.CallAsync("load_snapshot",new{path=dialog.FileName}),true);_routes.Clear();_routeIndex=-1;_offset=0;await ShowSearchAsync(_kind); },true);
+  try {
+   if(dialog.ShowDialog(this)!=true)return;
+   await Guard(async()=> {
+    bool loaded=await SnapshotTransition.RunAsync(CloseWorkbenches,
+     ()=>{DisableLiveWatch();_reloadContext=null;},
+     async()=>{await DisposeSearchView();CloseTools();await StopDetailViewsAsync();ClearDetail();SetSummary(await _bridge.CallAsync("load_snapshot",new{path=dialog.FileName}),true);_routes.Clear();_routeIndex=-1;_offset=0;await ShowSearchAsync(_kind);});
+    if(!loaded)Status("스냅샷 열기를 취소했습니다.");
+   },true);
+  } finally {if(_liveReload.Enabled&&!_closing)_liveWatchTimer.Start();}
  }
  private void SetNavigation()
  {
@@ -353,13 +362,10 @@ public partial class MainWindow : Window
  }
  private async Task ShowReview(JsonElement preview)
  {
-  SetBusy(false);long viewEpoch=_liveViewEpoch;bool apply=false;var dialog=new Window {Owner=this,Title="변경 검토",Width=660,Height=560,WindowStartupLocation=WindowStartupLocation.CenterOwner,ResizeMode=ResizeMode.CanResize};_scalarReviewWindow=dialog;var dock=new DockPanel {Margin=new(24)};
-  var buttons=new StackPanel {Orientation=Orientation.Horizontal,HorizontalAlignment=HorizontalAlignment.Right,Margin=new(0,20,0,0)};DockPanel.SetDock(buttons,Dock.Bottom);dock.Children.Add(buttons);buttons.Children.Add(Button("돌아가기",(_,_)=>dialog.Close()));var save=Button("백업 후 게임에 적용",(_,_)=>{apply=true;dialog.Close();},true);save.Margin=new(10,0,0,0);save.IsEnabled=preview.GetProperty("can_apply").GetBoolean()&&!preview.GetProperty("changes").EnumerateArray().Any(c=>AbilityVisibility.Current.IsHidden(c.TryGetProperty("key",out var key)?key.GetString():null));buttons.Children.Add(save);
-  var top=new StackPanel {Margin=new(0,0,0,20)};DockPanel.SetDock(top,Dock.Top);dock.Children.Add(top);top.Children.Add(Text("변경 내용 확인",24,null,true));var applyGuidance=Text(_live?EditApplicationGuidance.BeforeApply:"스냅샷 모드입니다. 실제 적용하려면 FM을 연결해야 합니다.",12,_live?"#929FB3":"#E9C882");if(_live)applyGuidance.ToolTip=EditApplicationGuidance.Detail;top.Children.Add(applyGuidance);
-  var rows=new StackPanel();foreach(var c in preview.GetProperty("changes").EnumerateArray()) {var line=new DockPanel();string? key=c.TryGetProperty("key",out var fieldKey)?fieldKey.GetString():null;var change=Text($"{AbilityVisibility.Current.Format(key,c.GetProperty("before"))}  →  {AbilityVisibility.Current.Format(key,c.GetProperty("after"))}",14,"#75DFC4",true);DockPanel.SetDock(change,Dock.Right);line.Children.Add(change);line.Children.Add(Text(c.GetProperty("label").GetString()??""));rows.Children.Add(new Border {Background=ResourceBrush("PanelBrush"),Padding=new(14),Margin=new(0,0,0,5),CornerRadius=new(6),Child=line});}dock.Children.Add(new ScrollViewer {Content=rows,VerticalScrollBarVisibility=ScrollBarVisibility.Auto});dialog.Content=dock;
+  SetBusy(false);long viewEpoch=_liveViewEpoch;var dialog=new ScalarReviewWindow(preview,_live) {Owner=this};_scalarReviewWindow=dialog;
   if(_qaRunning&&!_live)dialog.Loaded+=async(_,_)=>{await Task.Delay(100);CaptureWindow(dialog,System.IO.Path.Combine(System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(_qaOutput!))!,"wpf-review.png"));dialog.Close();};
   try {dialog.ShowDialog();}finally{if(_scalarReviewWindow==dialog)_scalarReviewWindow=null;}
-  if(apply&&viewEpoch==_liveViewEpoch&&_live&&_bridge!=null&&_detail!=null) {SetBusy(true,"원본 백업 · 적용 · 재검증 중…");var identity=(_detail.Entity.Kind,_detail.Entity.Id);var receipt=await _bridge.CallAsync("apply",new{token=preview.GetProperty("token").GetString()});await OpenEntity(identity.Kind,identity.Id,false);Status(EditApplicationGuidance.Applied);}
+  if(dialog.ApplyRequested&&viewEpoch==_liveViewEpoch&&_live&&_bridge!=null&&_detail!=null) {SetBusy(true,"원본 백업 · 적용 · 재검증 중…");var identity=(_detail.Entity.Kind,_detail.Entity.Id);var receipt=await _bridge.CallAsync("apply",new{token=preview.GetProperty("token").GetString()});await OpenEntity(identity.Kind,identity.Id,false);Status(EditApplicationGuidance.Applied);}
  }
  private async void ResetEdits_Click(object sender,RoutedEventArgs e) {if(_detail==null)return;foreach(var f in _detail.Fields)f.Reset();await RefreshDraftScores();}
  private async void Refresh_Click(object sender,RoutedEventArgs e) {if(_bridge==null||!CanLeave()||_busy)return;await Guard(RefreshCurrentAsync,true);}

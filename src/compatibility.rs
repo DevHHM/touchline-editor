@@ -125,4 +125,53 @@ mod tests {
             assert!(!allowed_fm27_field(EntityKind::Staff,key));
         }
     }
+    #[test]
+    fn fm27_actual_contract_and_health_keys_are_not_advertised() {
+        // Use the real keys from extended.rs, not the unrelated contract.wage typo.
+        for key in ["contract.weekly_wage", "contract.expires", "contract.listed",
+            "contract.listed_by_request", "contract.not_for_sale", "contract.set_for_release",
+            "contract.squad_number", "player.market_value", "player.asking_price",
+            "player.injured", "player.banned", "team_cohesion"] {
+            for kind in EntityKind::ALL {
+                assert!(!allowed_fm27_field(kind, key), "FM27 exposed {kind:?}/{key}");
+            }
+        }
+        // Supported adjacent scalars are not injury healing or a contract operation.
+        for key in ["morale", "injury_proneness"] {
+            assert!(allowed_fm27_field(EntityKind::Player, key));
+        }
+    }
+    #[test]
+    fn fm27_detail_strips_legacy_contract_bindings_before_preview() {
+        use crate::model::{Binding, Edit, Entity, Field, FootballCategory, Storage};
+        let mut s = session();
+        s.profile = profiles::FM27.label.into();
+        s.module_stamp = profiles::FM27.timestamp;
+        s.module_size = profiles::FM27.image_size;
+        for kind in [EntityKind::Player, EntityKind::Staff] {
+            let keys = ["ca", "contract.weekly_wage", "contract.expires", "contract.listed",
+                "contract.squad_number", "player.injured", "player.banned"];
+            let mut detail = Detail {
+                entity: Entity { id:7, kind, name:"Synthetic".into(), english_name:String::new(),
+                    nationality:String::new(), nationality_id:None, club:String::new(), club_id:None,
+                    age:None, ca:Some(100), pa:Some(150), role:String::new(), group:String::new(),
+                    football_category:FootballCategory::Unknown, address:0, base:0, index:None },
+                // Deliberately inject stale legacy bindings: the FM27 boundary
+                // must remove the entire unsupported field before preparation.
+                fields: keys.iter().enumerate().map(|(i,key)| Field {
+                    key:(*key).into(), label:(*key).into(), section:String::new(), value:100.,
+                    min:0., max:100_000_000., step:1., hint:String::new(),
+                    binding:Some(Binding {address:0x10000+i as u64*4,storage:Storage::U32,
+                        scale:1.,original:100u32.to_le_bytes().to_vec()})
+                }).collect(), guards:vec![], notes:vec![],
+            };
+            constrain_detail(&s, &mut detail);
+            assert_eq!(detail.fields.iter().map(|f|f.key.as_str()).collect::<Vec<_>>(), vec!["ca"]);
+            assert!(detail.fields[0].binding.is_some(), "supported scalar must remain editable");
+            for key in &keys[1..] {
+                assert!(crate::transaction::prepare(&detail, &[Edit {key:(*key).into(),value:20.}]).is_err(),
+                    "unsupported field reached scalar preparation: {kind:?}/{key}");
+            }
+        }
+    }
 }

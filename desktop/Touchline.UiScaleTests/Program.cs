@@ -16,7 +16,7 @@ internal static class Program
 
  private static int Run(string[] args)
  {
-  // No Window.Show, dispatcher loop, renderer, engine, or live desktop automation.
+  // No Window.Show, dispatcher loop, engine, or live desktop automation.
   // Exercise real WPF measure/arrange and menu handlers in an unshown visual tree.
   var app = new App();
   typeof(App).GetProperty(nameof(App.Arguments))!.SetValue(null, new[] { "--ui-check", "offline-layout" });
@@ -107,9 +107,110 @@ internal static class Program
   Check(EditApplicationGuidance.Applied.Contains("재시작 없이") && EditApplicationGuidance.Detail.Contains("한글화"), "apply_guidance_distinguishes_live_and_file_edits");
   results.Add(new { scenario = "readability_and_apply_guidance", cases = 4, fontWeight = weightProbe.FontWeight.ToString(), resourceWeight = app.Resources["AppBodyFontWeight"].ToString() });
   shell.Children.Remove(weightProbe);
+  Check(!(bool)typeof(MainWindow).GetProperty("TutorialAllowed", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(window)!, "tutorial_qa_window_blocks_onboarding");
+  typeof(MainWindow).GetMethod("ShowTutorial", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, null);
+  Check(typeof(MainWindow).GetField("_tutorialWindow", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(window) == null, "tutorial_qa_replay_does_not_open_a_window");
+  string? tutorialPreview = args.Length > 1 ? args[1] : args.Length > 0 ? Path.Combine(Path.GetDirectoryName(Path.GetFullPath(args[0]))!, "tutorial-preview.png") : null;
+  RunTutorialChecks(results, Check, tutorialPreview);
+  FeedbackUiChecks.Run(window, results, Check);
   string report = JsonSerializer.Serialize(new { success = failures.Count == 0, shownWindows = 0, capturedScreens = 0, engineStarted = false, gameWrites = false, cases = results, failures }, new JsonSerializerOptions { WriteIndented = true });
   if (args.Length > 0) { Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(args[0]))!); File.WriteAllText(args[0], report); }
   Console.WriteLine(report);
   return failures.Count == 0 ? 0 : 1;
+ }
+
+ private static void RunTutorialChecks(List<object> results, Action<bool, string> check, string? previewPath)
+ {
+  static T Field<T>(TutorialWindow window, string name) => (T)typeof(TutorialWindow).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(window)!;
+  static void Layout(FrameworkElement surface, double width, double height)
+  { surface.Measure(new Size(width, height)); surface.Arrange(new Rect(0, 0, width, height)); surface.UpdateLayout(); }
+  static Button Skip(TutorialWindow window) => ((Grid)((Border)window.Surface).Child).Children.OfType<StackPanel>().Single()
+   .Children.OfType<DockPanel>().Single().Children.OfType<Button>().Single();
+  static void Click(Button button) => button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+
+  object originalWeight = Application.Current.Resources["AppBodyFontWeight"];
+  var typography = new TutorialWindow();
+  try
+  {
+   Application.Current.Resources["AppBodyFontWeight"] = FontWeights.SemiBold;
+   check(Field<TextBlock>(typography, "_body").FontWeight == FontWeights.SemiBold && Field<TextBlock>(typography, "_hint").FontWeight == FontWeights.SemiBold,
+    "tutorial_honors_strong_text_preference");
+   Application.Current.Resources["AppBodyFontWeight"] = FontWeights.Medium;
+   check(Field<TextBlock>(typography, "_body").FontWeight == FontWeights.Medium, "tutorial_text_weight_updates_without_reopening");
+  }
+  finally { Application.Current.Resources["AppBodyFontWeight"] = originalWeight; typography.Close(); }
+  var help = new DiagnosticsWindow(() => { });
+  var helpPanel = (StackPanel)((ScrollViewer)((Border)help.Surface).Child).Content;
+  check(helpPanel.Children.OfType<Button>().Any(button => Equals(button.Content, "처음 시작하기 · 안내 다시 보기")), "tutorial_replay_is_discoverable_in_help");
+  help.Close();
+
+  var navigation = new TutorialWindow();
+  string initialHeading = Field<TextBlock>(navigation, "_heading").Text;
+  check(navigation.ExitAction == TutorialExitAction.None && !Field<Button>(navigation, "_previous").IsEnabled && Field<TextBlock>(navigation, "_progress").Text == "1 / 4", "tutorial_starts_on_first_page_without_dismissal");
+  Click(Field<Button>(navigation, "_next"));
+  check(Field<TextBlock>(navigation, "_heading").Text != initialHeading && Field<Button>(navigation, "_previous").IsEnabled && navigation.ExitAction == TutorialExitAction.None, "tutorial_next_changes_page_without_dismissal");
+  Click(Field<Button>(navigation, "_previous"));
+  check(Field<TextBlock>(navigation, "_heading").Text == initialHeading && !Field<Button>(navigation, "_previous").IsEnabled, "tutorial_previous_returns_to_first_page");
+  for (int index = 0; index < 3; ++index) Click(Field<Button>(navigation, "_next"));
+  check(Field<TextBlock>(navigation, "_progress").Text == "4 / 4" && Equals(Field<Button>(navigation, "_next").Content, "완료") && navigation.ExitAction == TutorialExitAction.None, "tutorial_reaching_last_page_requires_explicit_finish");
+  Click(Field<Button>(navigation, "_previous")); Click(Field<Button>(navigation, "_next")); Click(Field<Button>(navigation, "_next"));
+  check(navigation.ExitAction == TutorialExitAction.Completed && !navigation.IsVisible, "tutorial_finish_click_records_completion_without_showing_window");
+  var skipped = new TutorialWindow(); Click(Field<Button>(skipped, "_next")); Click(Skip(skipped));
+  check(skipped.ExitAction == TutorialExitAction.Skipped && !skipped.IsVisible, "tutorial_skip_click_records_explicit_dismissal");
+  var closed = new TutorialWindow(); Click(Field<Button>(closed, "_next")); closed.Close();
+  check(closed.ExitAction == TutorialExitAction.None && !closed.IsVisible, "tutorial_window_close_does_not_consume_first_launch");
+  results.Add(new { scenario = "tutorial_navigation", pages = 4, nextBackTested = true, finishRequiresClick = true, skipTested = true, closePreservesFirstLaunch = true, shownWindows = 0 });
+
+  foreach (var (width, height) in new[] { (440, 400), (640, 500) })
+  foreach (int percent in new[] { 80, 100, 150 })
+  {
+   UiScale.Set(percent, false);
+   var tutorial = new TutorialWindow();
+   try
+   {
+    typeof(UiScale).GetMethod("ConfigureWindow", BindingFlags.Static | BindingFlags.NonPublic)!.Invoke(null, [tutorial]);
+    var viewport = (UiScaleViewport)tutorial.Content;
+    var next = Field<Button>(tutorial, "_next"); var previous = Field<Button>(tutorial, "_previous"); var skip = Skip(tutorial);
+    var pageScroll = Field<ScrollViewer>(tutorial, "_pageScroll");
+    Rect Bounds(FrameworkElement element) => element.TransformToAncestor(viewport).TransformBounds(new Rect(element.RenderSize));
+    bool Reachable(FrameworkElement element)
+    {
+     var bounds = Bounds(element);
+     return bounds.Width > 0 && bounds.Height > 0 && bounds.Left >= -1 && bounds.Top >= -1 && bounds.Right <= viewport.ViewportWidth + 1 && bounds.Bottom <= viewport.ViewportHeight + 1;
+    }
+    for (int page = 0; page < 4; ++page)
+    {
+     Layout(viewport, width, height);
+     bool scaled = Math.Abs(viewport.Scale - percent / 100d) < .001;
+     bool pageReadable = Field<TextBlock>(tutorial, "_heading").ActualHeight > 0 && Field<TextBlock>(tutorial, "_body").ActualWidth > 150 && pageScroll.ViewportHeight >= 45;
+     bool navigationCorrect = previous.IsEnabled == (page > 0) && Equals(next.Content, page == 3 ? "완료" : "다음") && tutorial.ExitAction == TutorialExitAction.None;
+     bool scrollbarsAvailable = (viewport.ScrollableWidth < 1 || viewport.ComputedHorizontalScrollBarVisibility == Visibility.Visible)
+      && (viewport.ScrollableHeight < 1 || viewport.ComputedVerticalScrollBarVisibility == Visibility.Visible);
+     pageScroll.ScrollToVerticalOffset(pageScroll.ScrollableHeight); Layout(viewport, width, height);
+     bool bodyEndReachable = Math.Abs(pageScroll.VerticalOffset - pageScroll.ScrollableHeight) < 1;
+     viewport.ScrollToHorizontalOffset(0); viewport.ScrollToVerticalOffset(viewport.ScrollableHeight); Layout(viewport, width, height);
+     bool skipReachable = Reachable(skip);
+     viewport.ScrollToHorizontalOffset(viewport.ScrollableWidth); viewport.ScrollToVerticalOffset(viewport.ScrollableHeight); Layout(viewport, width, height);
+     bool footerReachable = Reachable(next) && Reachable(previous) && Math.Abs(viewport.VerticalOffset - viewport.ScrollableHeight) < 1;
+     bool highScaleScroll = percent != 150 || width != 440 || (viewport.ScrollableWidth > 0 && viewport.ScrollableHeight > 0);
+     bool success = scaled && pageReadable && navigationCorrect && scrollbarsAvailable && bodyEndReachable && skipReachable && footerReachable && highScaleScroll;
+     check(success, $"tutorial_page_{page + 1}_{width}x{height}_{percent}");
+     results.Add(new { scenario = "tutorial", page = page + 1, width, height, percent, success, scaled, pageReadable, navigationCorrect, scrollbarsAvailable, bodyEndReachable, skipReachable, footerReachable, highScaleScroll, viewport.ScrollableWidth, viewport.ScrollableHeight, pageViewportHeight = pageScroll.ViewportHeight });
+     if (page < 3) Click(next);
+    }
+   }
+   finally { tutorial.Close(); }
+  }
+  UiScale.Set(100, false);
+  if (previewPath != null)
+  {
+   TutorialWindow.RenderPreview(previewPath);
+   using var previewReport = JsonDocument.Parse(File.ReadAllText(Path.ChangeExtension(previewPath, ".json")));
+   bool previewValid = previewReport.RootElement.GetProperty("success").GetBoolean() && !previewReport.RootElement.GetProperty("shown").GetBoolean()
+    && !previewReport.RootElement.GetProperty("preferencesAccessed").GetBoolean() && previewReport.RootElement.GetProperty("pages").GetArrayLength() == 4
+    && previewReport.RootElement.GetProperty("pages").EnumerateArray().All(page => page.GetProperty("valid").GetBoolean() && File.Exists(page.GetProperty("output").GetString()));
+   check(previewValid, "tutorial_all_four_detached_previews_render_without_windows_or_preferences");
+   results.Add(new { scenario = "tutorial_previews", path = Path.GetFullPath(previewPath), pages = 4, success = previewValid, shownWindows = 0, preferencesAccessed = false });
+  }
  }
 }

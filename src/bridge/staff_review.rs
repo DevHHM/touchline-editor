@@ -77,6 +77,7 @@ impl Bridge {
                     self.staff_review_state.queries.len() < 2,
                     "스태프 검토는 동시에 최대 2개입니다. 이전 검토를 중지하세요"
                 );
+                self.refresh_staff_metadata(EntityKind::Staff)?;
                 let club = self.find(EntityKind::Club, required_id(a, "club_id")?)?;
                 let limit = a
                     .get("max_candidates")
@@ -112,7 +113,7 @@ impl Bridge {
                     .index()?
                     .entities
                     .iter()
-                    .filter(|e| e.kind == EntityKind::Staff)
+                    .filter(|e| e.kind == EntityKind::Staff && e.employment().is_some())
                 {
                     ensure!(
                         seen.insert(e.id),
@@ -209,7 +210,11 @@ impl Bridge {
                         let e = &review.incumbents[review.incumbent_cursor];
                         review.incumbent_cursor += 1;
                         match self.inspect_search_candidate(e) {
-                            Ok(d) => review.rows.push(advice::incumbent(e, Some(&d))),
+                            Ok(d) if d.entity.employment().is_some()&&d.entity.club_id==Some(review.club.id) => review.rows.push(advice::incumbent(&d.entity, Some(&d))),
+                            Ok(_) => {
+                                review.failed_incumbents+=1;
+                                review.rows.push(advice::incumbent(e,None));
+                            }
                             Err(_) => {
                                 review.failed_incumbents += 1;
                                 review.rows.push(advice::incumbent(e, None));
@@ -220,6 +225,10 @@ impl Bridge {
                         review.candidate_cursor += 1;
                         match self.inspect_search_candidate(e) {
                             Ok(d) => {
+                                if d.entity.employment().is_none() {
+                                    review.failed_candidates+=1;continue;
+                                }
+                                if d.entity.club_id==Some(review.club.id) {continue;}
                                 if !review
                                     .rows
                                     .iter()
@@ -227,7 +236,7 @@ impl Bridge {
                                 {
                                     continue;
                                 }
-                                let employer_rep = if let Some(club_id) = e.club_id {
+                                let employer_rep = if let Some(club_id) = d.entity.club_id {
                                     if let Some(rep) = review.club_reputations.get(&club_id) {
                                         *rep
                                     } else {
@@ -349,6 +358,22 @@ mod tests {
                 ..Bridge::default()
             },
         }
+    }
+    #[test]
+    fn fresh_unknown_affiliations_fail_review_instead_of_becoming_free_agent_advice() {
+        let mut f=fixture();
+        // The index is known at start; fresh detail loses relationship evidence.
+        let start=f.bridge.staff_review_command("staff_review_start",&json!({"club_id":10})).unwrap();
+        for id in [1,3,4] {
+            let path=f.folder.join(format!("detail-Staff-{id}.json"));
+            let mut d:Detail=serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            d.entity.club_id=None;d.entity.club.clear();d.entity.group=crate::model::STAFF_AFFILIATION_UNKNOWN.into();d.entity.role="직무 미확인".into();
+            std::fs::write(path,serde_json::to_vec(&d).unwrap()).unwrap();
+        }
+        let result=f.bridge.staff_review_command("staff_review_step",&json!({"review_id":start["review_id"]})).unwrap();
+        assert_eq!(result["report"]["coverage"]["failed_candidates"],2);assert_eq!(result["report"]["coverage"]["failed_incumbents"],1);
+        assert!(!result.to_string().contains("현재 무직으로 조회됨"));
+        for row in result["report"]["rows"].as_array().unwrap() {assert!(row["alternatives"].as_array().unwrap().is_empty());}
     }
     #[test]
     fn snapshot_scan_scores_candidates_and_never_exposes_memory_bindings() {

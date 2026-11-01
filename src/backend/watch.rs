@@ -28,12 +28,29 @@ pub struct Ready {
     pub identity: Identity,
     pub game_date: String,
 }
+/// Only executable identity, never process addresses, file paths or save data.
+/// An observed PE identity does not imply that this build passed validation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct DiagnosticContext {
+    pub pe_timestamp: u32,
+    pub image_size: u32,
+    pub storefront: &'static str,
+}
+impl DiagnosticContext {
+    pub fn from_pe(pe_timestamp:u32,image_size:u32)->Self {
+        Self {pe_timestamp,image_size,storefront:"unknown"}
+    }
+    pub fn from_ready(ready:&Ready)->Self {
+        Self::from_pe(ready.identity.module_stamp,ready.identity.module_size)
+    }
+}
 #[derive(Clone, Debug)]
 pub enum Observation {
     Ready(Ready),
     Waiting(String),
     Error(String),
-    UnsupportedBuild(String),
+    ErrorWithContext(String, DiagnosticContext),
+    UnsupportedBuild(String, Option<DiagnosticContext>),
     Absent,
 }
 
@@ -70,6 +87,22 @@ fn probe_pid(pid: u32) -> Result<Ready> {
         .find(|m| m.name.eq_ignore_ascii_case("game_plugin.dll"))
         .ok_or_else(|| anyhow::anyhow!(NotReady("게임 데이터 모듈이 아직 없습니다. FM 시작이 완료될 때까지 기다려 주세요")))?;
     let build=detect_build(&process,&module)?;
+    let context=DiagnosticContext::from_pe(build.timestamp,build.image_size);
+    probe_module(pid,&process,&module,build).map_err(|error|error.context(ObservedPe(context)))
+}
+
+/// Retains executable identity on later registry/date/permission failures. The
+/// typed context is not a permission grant and contains no object identity.
+#[derive(Debug)]
+struct ObservedPe(DiagnosticContext);
+impl std::fmt::Display for ObservedPe {
+    fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result {
+        write!(f,"관찰된 FM 빌드 {:08X}-{:08X}",self.0.pe_timestamp,self.0.image_size)
+    }
+}
+impl std::error::Error for ObservedPe {}
+
+fn probe_module(pid:u32,process:&Process,module:&Module,build:DetectedBuild)->Result<Ready> {
     let profile=require_read_profile(&build).with_context(||discovery::module_context(&module.path))?;
     let layout=profile.require_read_layout()?;
     let (stamp,size)=(build.timestamp,build.image_size);
@@ -115,12 +148,61 @@ fn probe_pid(pid: u32) -> Result<Ready> {
 }
 
 fn error_observation(error:anyhow::Error)->Observation {
-    if error.downcast_ref::<profiles::UnsupportedBuild>().is_some() {
-        Observation::UnsupportedBuild(format!("{error:#}"))
+    if let Some(build)=error.downcast_ref::<profiles::UnsupportedBuild>() {
+        Observation::UnsupportedBuild(format!("{error:#}"),
+            Some(DiagnosticContext::from_pe(build.timestamp,build.image_size)))
     } else if error.downcast_ref::<NotReady>().is_some() || error.downcast_ref::<EmptyRegistry>().is_some() {
         Observation::Waiting(format!("{error:#}"))
+    } else if let Some(context)=error.downcast_ref::<ObservedPe>() {
+        Observation::ErrorWithContext(format!("{error:#}"),context.0)
+    } else if let Some(build)=error.downcast_ref::<ObservedBuild>() {
+        Observation::ErrorWithContext(format!("{error:#}"),
+            DiagnosticContext::from_pe(build.timestamp,build.image_size))
     } else {
         Observation::Error(format!("{error:#}"))
+    }
+}
+
+fn unsupported_observation(items:Vec<(String,Option<DiagnosticContext>)>)->Observation {
+    // Never label a failure with an arbitrary instance's build when multiple
+    // FM processes have different executable identities.
+    let context=common_context(&items);
+    Observation::UnsupportedBuild(items.into_iter().map(|(reason,_)|reason).collect::<Vec<_>>().join("\n"),context)
+}
+fn common_context(items:&[(String,Option<DiagnosticContext>)])->Option<DiagnosticContext> {
+    items.first().and_then(|(_,first)|*first)
+        .filter(|context|items.iter().all(|(_,item)|*item==Some(*context)))
+}
+fn failed_observation(items:Vec<(String,Option<DiagnosticContext>)>)->Observation {
+    let context=common_context(&items);
+    let reason=items.into_iter().map(|(reason,_)|reason).collect::<Vec<_>>().join("\n");
+    if let Some(context)=context {Observation::ErrorWithContext(reason,context)} else {Observation::Error(reason)}
+}
+
+fn unavailable_observation(
+    mut unsupported:Vec<(String,Option<DiagnosticContext>)>,
+    errors:Vec<(String,Option<DiagnosticContext>)>,
+    waiting:Vec<String>,
+)->Observation {
+    // Include *all* candidate categories. A second instance with unreadable
+    // headers or a loading save must not inherit another instance's identity.
+    let mut contexts:Vec<_>=unsupported.iter().chain(errors.iter())
+        .map(|(_,context)|(String::new(),*context)).collect();
+    contexts.extend(waiting.iter().map(|_|(String::new(),None)));
+    let context=common_context(&contexts);
+    if !unsupported.is_empty() {
+        unsupported.extend(errors);
+        let mut result=unsupported_observation(unsupported);
+        if let Observation::UnsupportedBuild(_,actual)=&mut result {*actual=context;}
+        result
+    } else if !errors.is_empty() {
+        let result=failed_observation(errors);
+        match result {
+            Observation::ErrorWithContext(reason,_) if context.is_none()=>Observation::Error(reason),
+            other=>other,
+        }
+    } else {
+        Observation::Waiting(waiting.into_iter().next().unwrap_or_else(||"FM은 실행 중이며 세이브 로드 완료를 기다립니다".into()))
     }
 }
 
@@ -147,18 +229,17 @@ pub fn probe(preferred_pid: Option<u32>) -> Observation {
         match probe_pid(pid) {
             Ok(state)=>ready.push(state),
             Err(error)=>match error_observation(error) {
-                Observation::UnsupportedBuild(reason)=>unsupported.push(format!("PID {pid}: {reason}")),
+                Observation::UnsupportedBuild(reason,context)=>unsupported.push((format!("PID {pid}: {reason}"),context)),
                 Observation::Waiting(reason)=>waiting.push(reason),
-                Observation::Error(reason)=>errors.push(format!("PID {pid}: {reason}")),
+                Observation::Error(reason)=>errors.push((format!("PID {pid}: {reason}"),None)),
+                Observation::ErrorWithContext(reason,context)=>errors.push((format!("PID {pid}: {reason}"),Some(context))),
                 _=>unreachable!(),
             },
         }
     }
     match ready.len() {
         1 => Observation::Ready(ready.into_iter().next().unwrap()),
-        0 if !unsupported.is_empty()=>Observation::UnsupportedBuild(unsupported.join("\n")),
-        0 if !errors.is_empty()=>Observation::Error(errors.join("\n")),
-        0 => Observation::Waiting(waiting.into_iter().next().unwrap_or_else(||"FM은 실행 중이며 세이브 로드 완료를 기다립니다".into())),
+        0 => unavailable_observation(unsupported,errors,waiting),
         _ => Observation::Error("실행 중인 FM 세션이 여러 개입니다. 연결할 게임 하나만 남겨 주세요".into()),
     }
 }
@@ -167,18 +248,94 @@ pub fn probe(preferred_pid: Option<u32>) -> Observation {
 mod tests {
     use super::*;
     #[test]
+    fn mixed_process_failures_never_inherit_another_candidates_build() {
+        let first=DiagnosticContext::from_pe(0x12345678,0x12345000);
+        let other=DiagnosticContext::from_pe(0x22345678,0x22345000);
+        for context in [Some(other),None] {
+            let result=unavailable_observation(vec![("unsupported".into(),Some(first))],
+                vec![("registry/access".into(),context)],vec![]);
+            assert!(matches!(result,Observation::UnsupportedBuild(_,None)));
+        }
+        let result=unavailable_observation(vec![("unsupported".into(),Some(first))],
+            vec![("registry".into(),Some(first))],vec![]);
+        assert!(matches!(result,Observation::UnsupportedBuild(_,Some(c)) if c==first));
+        let result=unavailable_observation(vec![("unsupported".into(),Some(first))],vec![],vec!["loading".into()]);
+        assert!(matches!(result,Observation::UnsupportedBuild(_,None)));
+        let result=unavailable_observation(vec![],vec![("registry".into(),Some(first))],vec!["loading".into()]);
+        assert!(matches!(result,Observation::Error(_)));
+    }
+    #[test]
+    fn code_read_failure_retains_header_identity_without_accepting_the_build() {
+        let profile=&profiles::FM27;
+        let module=Module{name:"game_plugin.dll".into(),base:0x180000000,
+            size:profile.image_size,path:String::new()};
+        let mut reads=Vec::new();
+        let error=detect_build_with(&module,|address,size| {
+            reads.push((address,size));
+            let mut bytes=vec![0;size];
+            match (address-module.base,size) {
+                (0,64)=>{
+                    bytes[0..2].copy_from_slice(&0x5A4Du16.to_le_bytes());
+                    bytes[0x3c..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+                },
+                (0x80,84)=>{
+                    bytes[0..4].copy_from_slice(&0x4550u32.to_le_bytes());
+                    bytes[4..6].copy_from_slice(&0x8664u16.to_le_bytes());
+                    bytes[8..12].copy_from_slice(&profile.timestamp.to_le_bytes());
+                    bytes[24..26].copy_from_slice(&0x20Bu16.to_le_bytes());
+                    bytes[80..84].copy_from_slice(&profile.image_size.to_le_bytes());
+                },
+                _=>return Err(std::io::Error::from_raw_os_error(5).into()),
+            }
+            Ok(bytes)
+        }).expect_err("failed code reads must never return an accepted build");
+        assert!(error.downcast_ref::<std::io::Error>().is_some());
+        let Observation::ErrorWithContext(_,context)=error_observation(error) else {panic!("lost observed header identity")};
+        assert_eq!(context,DiagnosticContext::from_pe(profile.timestamp,profile.image_size));
+        assert_eq!(reads.len(),3); // Headers then first signature; no objects.
+        let error=detect_build_with(&module,|_,_|Err(std::io::Error::from_raw_os_error(5).into())).unwrap_err();
+        assert!(matches!(error_observation(error),Observation::Error(_)));
+    }
+    #[test]
+    fn observed_pe_context_is_bounded_and_ambiguous_instances_are_not_misattributed() {
+        let first=DiagnosticContext::from_pe(0x12345678,0x12345000);
+        let second=DiagnosticContext::from_pe(0x12345679,0x12345000);
+        assert_eq!(serde_json::to_value(first).unwrap(),serde_json::json!({
+            "pe_timestamp":0x12345678u32,"image_size":0x12345000u32,"storefront":"unknown"}));
+        for contexts in [vec![Some(first)],vec![Some(first),Some(first)]] {
+            let Observation::UnsupportedBuild(_,context)=unsupported_observation(contexts.into_iter().map(|c|("unsupported".into(),c)).collect()) else {panic!()};
+            assert_eq!(context,Some(first));
+        }
+        for contexts in [vec![Some(first),Some(second)],vec![Some(first),None],vec![None],vec![]] {
+            let Observation::UnsupportedBuild(_,context)=unsupported_observation(contexts.into_iter().map(|c|("unsupported".into(),c)).collect()) else {panic!()};
+            assert!(context.is_none());
+        }
+    }
+    #[test]
+    fn registry_failures_keep_observed_build_but_never_reclassify_a_loading_save() {
+        let context=DiagnosticContext::from_pe(profiles::FM27.timestamp,profiles::FM27.image_size);
+        let error=anyhow::anyhow!("인물 레지스트리 객체 유형이 다릅니다").context(ObservedPe(context));
+        let Observation::ErrorWithContext(reason,actual)=error_observation(error) else {panic!("lost PE context")};
+        assert_eq!(actual,context);assert!(reason.contains("객체 유형")&&reason.contains("6ADFB11C-19E69000"));
+        let error=anyhow::anyhow!(NotReady("세이브 로드 중")).context(ObservedPe(context));
+        assert!(matches!(error_observation(error),Observation::Waiting(_)));
+        assert!(matches!(failed_observation(vec![("registry".into(),Some(context))]),Observation::ErrorWithContext(_,c) if c==context));
+        assert!(matches!(failed_observation(vec![("registry".into(),Some(context)),("access".into(),None)]),Observation::Error(_)));
+    }
+    #[test]
     fn unsupported_build_is_not_reported_as_loading() {
         let error=anyhow::anyhow!(profiles::UnsupportedBuild {timestamp:profiles::FM27.timestamp,
             image_size:profiles::FM27.image_size,profile:Some(&profiles::FM27)});
-        assert!(matches!(error_observation(error),Observation::UnsupportedBuild(_)));
+        assert!(matches!(error_observation(error),Observation::UnsupportedBuild(_,Some(_))));
         assert!(matches!(error_observation(anyhow::anyhow!(NotReady("세이브 로드 중"))),Observation::Waiting(_)));
         let error=anyhow::anyhow!(profiles::UnsupportedBuild {
             timestamp:0x12345678,image_size:0x12345000,profile:None})
             .context(discovery::module_context(r"D:\XboxGames\Football Manager 27\Content\game_plugin.dll"));
-        let Observation::UnsupportedBuild(reason)=error_observation(error) else {
+        let Observation::UnsupportedBuild(reason,context)=error_observation(error) else {
             panic!("store-path context must retain unsupported-build classification")
         };
         assert!(reason.contains("12345678/12345000") && reason.contains("XboxGames/WindowsApps"));
+        assert_eq!(context,Some(DiagnosticContext::from_pe(0x12345678,0x12345000)));
     }
     #[test]
     fn access_and_validation_errors_are_not_loading_and_keep_the_error_chain() {

@@ -46,9 +46,10 @@ test("workerd native fetch and SQLite alarm publish once without following redir
   };
   const mf = new Miniflare(convertV4MiniflareOptions ? convertV4MiniflareOptions(options) : options);
   try {
-    const report = { schema: 1, product: "touchline-editor", report_id: "a".repeat(32),
+    const report = { schema: 2, product: "touchline-editor", report_id: "a".repeat(32),
       occurred_at: new Date().toISOString(), editor_version: "0.0.0", source: "client",
-      category: "application", event: "application_error", code: "application_error", build: null };
+      category: "application", event: "application_error", code: "application_error", build: null,
+      failure_stage: "handled", exception_type: "null_reference", build_source: "unknown", storefront: "unknown" };
     async function ingest(value) {
       return mf.dispatchFetch("https://collector.test/v1/reports", { method: "POST",
         headers: { "Content-Type": "application/json", "CF-Connecting-IP": "192.0.2.1" }, body: JSON.stringify(value) });
@@ -62,6 +63,8 @@ test("workerd native fetch and SQLite alarm publish once without following redir
     assert.equal(requests.length, 1);
     assert.equal(requests[0].url, "https://api.github.com/repos/DevHHM/touchline-editor/issues");
     assert.equal(requests[0].method, "POST");
+    assert(requests[0].body.includes("| Exception kind | null_reference |"));
+    assert(requests[0].body.includes("| Failure stage | handled |"));
     assert(result.alarm > Date.now());
     mode = "redirect";
     assert.equal((await ingest({ ...report, report_id: "b".repeat(32), editor_version: "0.0.1" })).status, 202);

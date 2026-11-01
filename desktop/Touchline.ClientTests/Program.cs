@@ -24,6 +24,18 @@ if (args.Contains("--bridge"))
         if (command == "malformed") { Console.WriteLine("{}"); continue; }
         if (command == "exit") return 0;
         if (command == "diagnostic") Console.Error.WriteLine("테스트 진단");
+        if(command=="connection_poll"&&root.GetProperty("args").TryGetProperty("delayedContextForDiagnostics",out _)) {
+            await Task.Delay(180);
+            Console.WriteLine(JsonSerializer.Serialize(new{id,ok=true,data=new{diagnostic_context=new{pe_timestamp=0x6ADFB11Cu,image_size=0x19E69000u,storefront="unknown"},summary=new{connected=true,live=true,profile="FM27 / 6ADFB11C-19E69000"}}}));continue;
+        }
+        if(command=="load_snapshot"&&root.GetProperty("args").TryGetProperty("failSnapshotForDiagnostics",out _)) {
+            Console.WriteLine(JsonSerializer.Serialize(new{id,ok=false,error="조회 자료를 찾지 못했습니다"}));continue;
+        }
+        if(command=="connect"&&root.GetProperty("args").TryGetProperty("malformedForDiagnostics",out _)) {Console.WriteLine("{}");continue;}
+        if(command=="connect"&&root.GetProperty("args").TryGetProperty("observedPeForDiagnostics",out _)) {
+            Console.WriteLine(JsonSerializer.Serialize(new{id,ok=false,error="FM27 코드 검증 불일치: 테스트 검증. 데이터 연결을 중단했습니다",
+                diagnostic_context=new{pe_timestamp=0x12345678u,image_size=0x01234000u,storefront="unknown",path="PRIVATE_PE_PATH",base_address="PRIVATE_PE_ADDRESS"}}));continue;
+        }
         if(command=="connect"&&root.GetProperty("args").TryGetProperty("failForDiagnostics",out _)) {
             Console.WriteLine(JsonSerializer.Serialize(new{id,ok=false,error="FM 접근 실패 0x12345678 token=backend-secret",data=(object?)null}));continue;
         }
@@ -49,6 +61,12 @@ if(args.Contains("--sharing-tests")) {
     return 0;
 }
 
+if(args.Contains("--snapshot-transition-tests")) {
+    await SnapshotTransitionTests.RunAsync(Check);
+    Console.WriteLine(JsonSerializer.Serialize(new{passed=passed.Count,failed=0,tests=passed,fm_accessed=false}));
+    return 0;
+}
+
 var reload = new LiveReloadState();
 var connectedObservation = new LiveConnectionObservation { State = "connected", Monitoring = true, Generation = 7 };
 Check(reload.Observe(connectedObservation) == default && !reload.Enabled, "reload_disabled_never_polls_or_reconnects");
@@ -69,6 +87,7 @@ Check(reload.Observe(new() { State = "waiting", Monitoring = true, Generation = 
 reload.Disable();
 Check(reload.Generation == null && !reload.Invalidated && !reload.Enabled, "reload_stop_clears_lifecycle_state");
 LiveReloadTests.Run(Check);
+await SnapshotTransitionTests.RunAsync(Check);
 await ConnectionRecoveryTests.RunAsync(Check);
 PositionSearchTests.Run(Check);
 await DiagnosticsTests.RunAsync(Check);
@@ -77,6 +96,7 @@ GameEditionTests.Run(Check);
 DetailPresentationTests.Run(Check);
 PackagePathsTests.Run(Check);
 DesktopUsabilityTests.Run(Check);
+TutorialTests.Run(Check);
 AbilityVisibilityTests.Run(Check);
 await ClubGrowthAvailabilityTests.RunAsync(Check);
 

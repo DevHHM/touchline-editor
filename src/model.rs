@@ -81,6 +81,14 @@ pub struct Entity {
     pub base: u64,
     pub index: Option<u32>,
 }
+pub const STAFF_AFFILIATION_UNKNOWN: &str = "소속 미확인";
+impl Entity {
+    /// None is a failed/unverified staff affiliation, not known unemployment.
+    pub fn employment(&self) -> Option<bool> {
+        if self.kind == EntityKind::Staff && self.group == STAFF_AFFILIATION_UNKNOWN { None }
+        else { Some(self.club_id.is_some()) }
+    }
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Index {
     pub session: Session,

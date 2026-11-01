@@ -7,6 +7,9 @@ const NOW = Date.parse("2026-10-30T12:00:00.000Z");
 const report = (id = 1, changes = {}) => ({ schema: 1, product: "touchline-editor", report_id: id.toString(16).padStart(32, "0"),
   occurred_at: new Date(NOW).toISOString(), editor_version: "0.13.3", source: "engine", category: "connection",
   event: "connection_failed", code: "registry_validation", build: "6ADFB11C-19E69000", ...changes });
+const detailedReport = (id = 1, changes = {}) => report(id, { schema: 2, editor_version: "0.14.3", source: "client",
+  category: "application", event: "application_error", code: "application_error", failure_stage: "handled",
+  exception_type: "null_reference", build_source: "verified_session", storefront: "steam", ...changes });
 
 function harness(fetcher = async () => new Response(JSON.stringify({ number: 10 }), { status: 201 })) {
   const db = new DatabaseSync(":memory:"); let now = NOW; let pendingAlarm = null; const alarms = [];
@@ -58,6 +61,41 @@ test("fingerprint excludes random report ID/time, HMAC keys rotate daily without
   const a = await clientKey("192.0.2.10", "2026-10-30", "x".repeat(32));
   const b = await clientKey("192.0.2.10", "2026-10-31", "x".repeat(32));
   assert.match(a, /^[0-9a-f]{64}$/); assert.notEqual(a, b); assert(!a.includes("192.0.2.10"));
+});
+
+test("v2 admits only fixed diagnostic enums and preserves strict legacy compatibility", async () => {
+  assert.equal(validateReport(detailedReport(), NOW).exception_type, "null_reference");
+  assert.equal(Object.keys(validateReport(report(), NOW)).length, 10);
+  for (const key of ["failure_stage", "exception_type", "build_source", "storefront"]) {
+    assert.equal(validateReport(detailedReport(1, { [key]: "PRIVATE_MESSAGE C:\\user\\file 0x12345678" }), NOW), null);
+    const missing = detailedReport(); delete missing[key]; assert.equal(validateReport(missing, NOW), null);
+  }
+  assert.equal(validateReport(detailedReport(1, { message: "private" }), NOW), null);
+  assert.equal(validateReport(detailedReport(1, { build: null }), NOW), null);
+  assert.equal(validateReport(detailedReport(1, { build: null, build_source: "unknown" }), NOW).build, null);
+  assert.equal(validateReport(report(1, { failure_stage: "handled" }), NOW), null);
+  assert.equal(validateReport(detailedReport(1, { build: "12345678-01234000", build_source: "observed_pe" }), NOW).build, "12345678-01234000");
+  assert.equal(validateReport(detailedReport(1, { build: "12345678-01234000", build_source: "verified_session" }), NOW), null);
+  assert.equal(validateReport(detailedReport(1, { build: "12345678-00000000", build_source: "observed_pe" }), NOW), null);
+  assert.equal(validateReport(detailedReport(1, { build: "0x7FF123456789 PRIVATE_PATH", build_source: "observed_pe" }), NOW), null);
+  assert.equal(validateReport(report(1, { build: "12345678-01234000" }), NOW), null);
+  assert.equal(await fingerprint(detailedReport()), "8e23f315ed96c57888ca5253c356bebd403a80067b5b146932596ac3124ec982");
+  assert.notEqual(await fingerprint(detailedReport()), await fingerprint(detailedReport(2, { exception_type: "io" })));
+  assert.notEqual(await fingerprint(detailedReport()), await fingerprint(detailedReport(2, { failure_stage: "unhandled_domain" })));
+  assert.notEqual(await fingerprint(detailedReport()), await fingerprint(report(2, { editor_version: "0.14.3", source: "client", category: "application", event: "application_error", code: "application_error" })));
+});
+
+test("v2 persists and publishes diagnostic codes without mixing generic legacy aggregates", async () => {
+  const gh = githubMemory(), h = harness(gh.fetcher);
+  await h.ingest(report(1, { editor_version: "0.14.3", source: "client", category: "application", event: "application_error", code: "application_error" }));
+  await h.ingest(detailedReport(2)); await h.ingest(detailedReport(3));
+  assert.equal(h.rows().length, 2); assert.equal(h.rows().find(row => row.exception_type === "null_reference").count, 2);
+  await h.object.alarm(); await h.object.alarm();
+  const content = [...gh.issues.values()].find(issue => issue.body.includes("| Exception kind | null_reference |"));
+  assert(content.body.includes("| Failure stage | handled |") && content.body.includes("| Build provenance | verified_session |") && content.body.includes("| Storefront | steam |"));
+  assert(!content.body.includes(detailedReport(2).report_id));
+  assert.equal(gh.requests.filter(request => request.method === "POST").length, 2);
+  h.db.close();
 });
 
 test("202 follows durable sync; retry after uncertain acceptance is report-ID idempotent", async () => {
@@ -290,9 +328,10 @@ test("claimed updates have recovery alarms and failed finalization schedules a b
 
 test("existing SQLite databases gain update fields without losing deduplication history", async () => {
   const h = harness(); await h.ingest(report());
-  for (const column of ["published_count", "last_published_at", "next_update_at", "update_lease_until", "update_blocked"])
+  for (const column of ["published_count", "last_published_at", "next_update_at", "update_lease_until", "update_blocked", "failure_stage", "exception_type", "build_source", "storefront"])
     h.db.exec(`ALTER TABLE aggregates DROP COLUMN ${column}`);
   new DiagnosticsQueue({ storage: h.storage }, { GITHUB_TOKEN: "server-secret" }, { now: () => NOW });
   assert.equal(h.rows().length, 1); assert.equal(h.rows()[0].published_count, 0);
+  assert.equal(h.rows()[0].exception_type, null);
   assert.equal((await h.ingest(report())).status, 202); assert.equal(h.rows()[0].count, 1); h.db.close();
 });

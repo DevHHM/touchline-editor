@@ -109,8 +109,8 @@ impl Filter {
                 .is_none_or(|category| e.football_category == category)
             && within(e.ca, self.ca_min, self.ca_max)
             && within(e.pa, self.pa_min, self.pa_max)
-            && (!self.unemployed || e.club_id.is_none())
-            && (!self.employed || e.club_id.is_some())
+            && (!self.unemployed || e.employment()==Some(false))
+            && (!self.employed || e.employment()==Some(true))
             && (normalize(&self.role).is_empty() || role_matches(&e.role, &self.role))
             && tokens_match(&e.club, &self.club_query)
             && self.group.as_ref().is_none_or(|group| {
@@ -859,6 +859,29 @@ mod tests {
             .validate()
             .is_err()
         );
+    }
+    #[test]
+    fn unknown_staff_affiliation_never_matches_unemployment_or_negative_employment_conditions() {
+        let mut d=detail();d.entity.kind=EntityKind::Staff;d.entity.club_id=None;d.entity.club.clear();
+        d.entity.group=STAFF_AFFILIATION_UNKNOWN.into();d.entity.role="직무 미확인".into();
+        assert!(!Filter {employed:true,..Default::default()}.matches(&d.entity));
+        assert!(!Filter {unemployed:true,..Default::default()}.matches(&d.entity));
+        for (key,op,value) in [("employed","eq",serde_json::json!(false)),("employed","ne",serde_json::json!(true)),
+            ("employed","eq",serde_json::json!(true)),("employed","ne",serde_json::json!(false)),
+            ("role","ne",serde_json::json!("코치")),("group","not_contains",serde_json::json!("1군"))] {
+            let f:Filter=serde_json::from_value(serde_json::json!({"conditions":[{"source":"entity","key":key,"op":op,"value":value}]})).unwrap();
+            assert!(!f.matches(&d.entity));assert!(!f.matches_detail(&d));
+        }
+        let f:Filter=serde_json::from_value(serde_json::json!({"conditions":[
+            {"source":"entity","key":"employed","op":"eq","value":false},
+            {"source":"entity","key":"id","op":"eq","value":d.entity.id,"join":"or"}]})).unwrap();
+        assert!(f.matches(&d.entity));assert!(f.matches_detail(&d));
+        d.entity.group="무소속".into();assert!(Filter {unemployed:true,..Default::default()}.matches(&d.entity));
+        d.entity.club_id=Some(11);d.entity.group="1군".into();d.entity.role.clear();
+        for op in ["eq","ne","contains","not_contains"] {
+            let f:Filter=serde_json::from_value(serde_json::json!({"conditions":[{"source":"entity","key":"role","op":op,"value":"코치"}]})).unwrap();
+            assert!(!f.matches(&d.entity));assert!(!f.matches_detail(&d));
+        }
     }
     #[test]
     fn name_search_normalizes_unicode_whitespace_case_and_multiple_tokens() {

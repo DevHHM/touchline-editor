@@ -70,7 +70,7 @@ public partial class MainWindow
   }
  }
 
- private void ShortcutHelp_Click(object sender, RoutedEventArgs e) => new DiagnosticsWindow { Owner=this }.ShowDialog();
+ private void ShortcutHelp_Click(object sender, RoutedEventArgs e) => new DiagnosticsWindow(ShowTutorial) { Owner=this }.ShowDialog();
  private void ClearSearch_Click(object sender, RoutedEventArgs e)
  {
   if (_busy) return;

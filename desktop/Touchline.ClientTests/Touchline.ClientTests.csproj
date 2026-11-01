@@ -22,12 +22,14 @@
     <Compile Include="../Touchline.Wpf/LeagueBrowserModels.cs" Link="LeagueBrowserModels.cs" />
     <Compile Include="../Touchline.Wpf/SearchColumns.cs" Link="SearchColumns.cs" />
     <Compile Include="../Touchline.Wpf/LiveReloadState.cs" Link="LiveReloadState.cs" />
+    <Compile Include="../Touchline.Wpf/SnapshotTransition.cs" Link="SnapshotTransition.cs" />
     <Compile Include="../Touchline.Wpf/GameEditionPresentation.cs" Link="GameEditionPresentation.cs" />
     <Compile Include="../Touchline.Wpf/DetailPresentation.cs" Link="DetailPresentation.cs" />
     <Compile Include="../Touchline.Wpf/ClubGrowthAvailability.cs" Link="ClubGrowthAvailability.cs" />
     <Compile Include="../Touchline.Wpf/PackagePaths.cs" Link="PackagePaths.cs" />
     <Compile Include="../Touchline.Wpf/DesktopWindowPreferences.cs" Link="DesktopWindowPreferences.cs" />
     <Compile Include="../Touchline.Wpf/UiScalePreferences.cs" Link="UiScalePreferences.cs" />
+    <Compile Include="../Touchline.Wpf/TutorialPreferences.cs" Link="TutorialPreferences.cs" />
     <Compile Include="../Touchline.Wpf/EditorShortcuts.cs" Link="EditorShortcuts.cs" />
   </ItemGroup>
 </Project>

@@ -32,12 +32,14 @@ public partial class MainWindow
   _livePollBusy = true;
   try
   {
-   var observation = Decode<LiveConnectionObservation>(await _bridge.CallAsync("connection_poll")) ?? throw new InvalidDataException("연결 상태 응답을 읽을 수 없습니다.");
+   var observedData = await _bridge.CallAsync("connection_poll");
+   var observation = Decode<LiveConnectionObservation>(observedData) ?? throw new InvalidDataException("연결 상태 응답을 읽을 수 없습니다.");
    LogConnectionState(observation.State,observation.Reason);
    if (_closing) return;
    var decision = _liveReload.Observe(observation);
    if (decision.Stop) { _liveWatchTimer.Stop(); return; }
    if (decision.Invalidate) await InvalidateLoadedSessionAsync(observation.Reason);
+   DiagnosticsLog.Current?.ObserveConnectionContext(observedData);
    if (ConnectionPresentation.IsProblem(observation.State)) { ShowConnectionProblem(observation.State, observation.Reason); return; }
    if (decision.RestoreConnected)
    {
@@ -106,6 +108,7 @@ public partial class MainWindow
 
  private async Task InvalidateLoadedSessionAsync(string reason)
  {
+  DiagnosticsLog.Current?.ClearGameContext();
   _liveReload.InvalidateView();
   ++_liveViewEpoch;
   _recentHistory.InvalidateSession();

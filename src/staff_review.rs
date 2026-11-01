@@ -504,6 +504,7 @@ pub fn candidate_relevant(row: &Row, d: &Detail) -> bool {
             .is_some_and(|(k, s)| value(d, k).is_some_and(|v| v > s && v <= SCORE_MAX))
 }
 pub fn offer(row: &mut Row, d: &Detail, target_rep: Option<f64>, employer_rep: Option<f64>) {
+    if d.entity.employment().is_none() {return;}
     if !candidate_relevant(row, d) {
         return;
     }

@@ -205,6 +205,7 @@ impl Bridge {
                     serde_json::from_value(a.get("filter").cloned().unwrap_or(json!({})))?;
                 filter.validate()?;
                 let k = kind(a)?;
+                self.refresh_staff_metadata(k)?;
                 let club = a
                     .get("club_id")
                     .filter(|value| !value.is_null())
@@ -410,18 +411,18 @@ impl Bridge {
             }
             "search_facets" => {
                 let k = kind(a)?;
+                self.refresh_staff_metadata(k)?;
                 let mut roles = std::collections::BTreeMap::<String, usize>::new();
                 let mut groups = std::collections::BTreeMap::<String, usize>::new();
                 let mut categories = std::collections::BTreeMap::<String, usize>::new();
                 let mut nations = std::collections::BTreeMap::<u32, (String, usize)>::new();
                 let mut total = 0;
                 let mut employed = 0;
+                let mut employment_unknown = 0;
                 for e in self.index()?.entities.iter().filter(|e| e.kind == k) {
                     total += 1;
                     *categories.entry(e.football_category.key().into()).or_default() += 1;
-                    if e.club_id.is_some() {
-                        employed += 1;
-                    }
+                    match e.employment() {Some(true)=>employed+=1,None=>employment_unknown+=1,_=>{}}
                     let clean = |text: &str| {
                         text.split_whitespace()
                             .collect::<Vec<_>>()
@@ -431,13 +432,13 @@ impl Bridge {
                             .collect::<String>()
                     };
                     let mut seen = std::collections::HashSet::new();
-                    for role in e.role.split('·').map(clean).filter(|role| !role.is_empty()) {
+                    for role in e.role.split('·').map(clean).filter(|role| !role.is_empty()&&e.employment().is_some()) {
                         if seen.insert(role.clone()) {
                             *roles.entry(role).or_default() += 1;
                         }
                     }
                     let group = clean(&e.group);
-                    if !group.is_empty() {
+                    if !group.is_empty()&&e.employment().is_some() {
                         *groups.entry(group).or_default() += 1;
                     }
                     if matches!(k, EntityKind::Player | EntityKind::Staff | EntityKind::Person) {
@@ -468,7 +469,7 @@ impl Bridge {
                         .collect::<Vec<_>>()
                 };
                 Ok(
-                    json!({"roles":facet(roles),"groups":facet(groups),"football_categories":facet(categories),"nations":nations,"total":total,"employed":employed,"unemployed":total-employed}),
+                    json!({"roles":facet(roles),"groups":facet(groups),"football_categories":facet(categories),"nations":nations,"total":total,"employed":employed,"unemployed":total-employed-employment_unknown,"employment_unknown":employment_unknown}),
                 )
             }
             "league_catalog" => {
@@ -1042,6 +1043,47 @@ mod tests {
         f.bridge
             .dispatch("query_step", &json!({"query_id":id}))
             .unwrap()
+    }
+    #[test]
+    fn staff_query_and_facets_refresh_before_filtering_and_keep_query_candidates_stable() {
+        let mut b=crate::bridge::tests::staff_refresh_fixture();b.live=true;
+        let result=b.dispatch("query_start",&json!({"kind":"Staff","club_id":22,"filter":{"role":"스카우트"}})).unwrap();
+        let id=result["query_id"].as_u64().unwrap();
+        let candidates=&b.work.queries[&id].candidates;
+        assert_eq!(candidates.len(),1);assert_eq!(candidates[0].club_id,Some(22));assert_eq!(candidates[0].role,"스카우트");
+        b.staff_refresh_hook=Some(|index|{index.entities[0].club_id=Some(33);index.entities[0].role="감독".into();Ok(())});
+        let facets=b.dispatch("search_facets",&json!({"kind":"Staff"})).unwrap();
+        assert_eq!(facets["roles"][0]["value"],"감독");assert_eq!(b.work.queries[&id].candidates[0].club_id,Some(22));
+    }
+    #[test]
+    fn staff_facets_separate_unknown_affiliation_from_known_unemployment_and_missing_job() {
+        let mut b=crate::bridge::tests::staff_refresh_fixture();
+        let rows=&mut b.index.as_mut().unwrap().entities;
+        let mut unemployed=rows[0].clone();unemployed.id=8;unemployed.club_id=None;unemployed.club.clear();unemployed.role="무직".into();unemployed.group="무소속".into();
+        let mut unknown=unemployed.clone();unknown.id=9;unknown.group=crate::model::STAFF_AFFILIATION_UNKNOWN.into();unknown.role="직무 미확인".into();
+        let mut no_job=rows[0].clone();no_job.id=10;no_job.role.clear();rows.extend([unemployed,unknown,no_job]);
+        let facets=b.dispatch("search_facets",&json!({"kind":"Staff"})).unwrap();
+        assert_eq!(facets["total"],4);assert_eq!(facets["employed"],2);assert_eq!(facets["unemployed"],1);assert_eq!(facets["employment_unknown"],1);
+        assert!(!facets["roles"].as_array().unwrap().iter().any(|r|r["value"]=="직무 미확인"));
+        assert!(!facets["groups"].as_array().unwrap().iter().any(|r|r["value"]==crate::model::STAFF_AFFILIATION_UNKNOWN));
+    }
+    #[test]
+    fn staff_overlay_preserves_scalar_baseline_and_detail_invalidates_only_its_own_token() {
+        let mut f=fixture();
+        let mut staff=load_snapshot_detail(f.bridge.snapshot.as_ref().unwrap(),EntityKind::Player,7).unwrap();
+        staff.entity.kind=EntityKind::Staff;staff.entity.id=17;
+        f.bridge.index.as_mut().unwrap().entities.push(staff.entity.clone());
+        std::fs::write(f.folder.join("detail-Staff-17.json"),serde_json::to_vec(&staff).unwrap()).unwrap();
+        f.bridge.dispatch("detail",&json!({"kind":"Staff","id":17})).unwrap();
+        f.bridge.dispatch("detail",&json!({"kind":"Player","id":8})).unwrap();
+        let staff_token=f.bridge.dispatch("preview",&json!({"kind":"Staff","id":17,"edits":[{"key":"ca","value":101}]})).unwrap()["token"].as_str().unwrap().to_string();
+        let player_token=f.bridge.dispatch("preview",&json!({"kind":"Player","id":8,"edits":[{"key":"ca","value":111}]})).unwrap()["token"].as_str().unwrap().to_string();
+        staff.fields[0].value=125.;staff.entity.club_id=Some(22);staff.entity.role="스카우트".into();
+        std::fs::write(f.folder.join("detail-Staff-17.json"),serde_json::to_vec(&staff).unwrap()).unwrap();
+        let overlay=f.bridge.dispatch("overlay_detail",&json!({"id":17})).unwrap();assert_eq!(overlay["fields"][0]["value"],125.);
+        assert_eq!(f.bridge.details[&(EntityKind::Staff,17)].fields[0].value,100.);assert!(f.bridge.pending.contains_key(&staff_token));assert!(f.bridge.pending.contains_key(&player_token));
+        f.bridge.dispatch("detail",&json!({"kind":"Staff","id":17})).unwrap();
+        assert_eq!(f.bridge.details[&(EntityKind::Staff,17)].fields[0].value,125.);assert!(!f.bridge.pending.contains_key(&staff_token));assert!(f.bridge.pending.contains_key(&player_token));
     }
     #[test]
     fn detailed_conditions_keep_or_candidates_and_apply_and_precedence() {

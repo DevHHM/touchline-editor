@@ -89,11 +89,15 @@ public sealed class BridgeClient : IAsyncDisposable
     private async Task<JsonElement> CallCoreAsync(string command, object? args, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(command);
+        if (command is "connect" or "load_snapshot") _diagnostics?.ClearGameContext();
         ThrowIfUnavailable();
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetime.Token);
         await _requestLock.WaitAsync(linked.Token).ConfigureAwait(false);
         try
         {
+            // A preceding in-flight poll may have restored its old context
+            // while this fresh connection/snapshot request waited for the pipe.
+            if (command is "connect" or "load_snapshot") _diagnostics?.ClearGameContext();
             ThrowIfUnavailable();
             linked.Token.ThrowIfCancellationRequested();
             var id = Interlocked.Increment(ref _nextId);
@@ -114,6 +118,13 @@ public sealed class BridgeClient : IAsyncDisposable
                 !root.TryGetProperty("ok", out var ok) || ok.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
                 throw new IOException("Rust 엔진 응답 순서 또는 형식이 올바르지 않습니다.");
             Volatile.Write(ref _uncertainRequest, 0);
+            if (command is "connect" or "connection_poll" or "connection_reconnect")
+            {
+                // Failed connection responses may contain a bounded PE identity
+                // even though no supported session could be attached.
+                var context = ok.GetBoolean() && root.TryGetProperty("data", out var observed) ? observed : root;
+                _diagnostics?.ObserveConnectionContext(context);
+            }
             if (!ok.GetBoolean())
             {
                 var error = root.TryGetProperty("error", out var errorElement)
@@ -125,6 +136,7 @@ public sealed class BridgeClient : IAsyncDisposable
         }
         catch (Exception ex) when (ex is IOException or JsonException or InvalidOperationException)
         {
+            _diagnostics?.ClearGameContext();
             FaultAndStop(ex.Message);
             throw new BridgeException("Rust 엔진과 통신하지 못했습니다. " + ex.Message, ex);
         }

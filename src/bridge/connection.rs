@@ -1,7 +1,7 @@
 //! Connection recovery uses a small identity probe; rebuilding the full index
 //! is a separate, serial command after the game has remained stable.
 use super::*;
-use crate::backend::watch::{self, Observation, Ready};
+use crate::backend::watch::{self, DiagnosticContext, Observation, Ready};
 
 const STABLE_FOR: Duration = Duration::from_millis(1500);
 const RECONNECT_BACKOFF: Duration = Duration::from_secs(8);
@@ -15,12 +15,15 @@ pub(super) struct Monitor {
     state: &'static str,
     reason: String,
     last_attempt: Option<Instant>,
+    pub(super) diagnostic_context: Option<DiagnosticContext>,
 }
 
 pub(super) fn is_mutation(command: &str) -> bool {
     matches!(command, "apply" | "undo" | "relation_apply" | "relation_undo"
         | "event_apply" | "event_undo" | "batch_apply" | "batch_undo"
         | "freeze_enable" | "freeze_tick" | "name_localization_apply" | "name_localization_undo")
+        || cfg!(feature = "fm27-health-experiment") && matches!(command, "injury_test_apply" | "ban_test_apply")
+        || cfg!(feature = "fm27-transfer-experiment") && command == "transfer_test_apply"
 }
 
 impl Bridge {
@@ -33,7 +36,8 @@ impl Bridge {
             "monitoring":self.connection.enabled,"changed":changed,"date_changed":date_changed,
             "can_reconnect":can_reconnect,"generation":self.connection_generation,
             "session_generation":self.connection_generation,"data_revision":self.epoch,"reason":self.connection.reason,
-            "game_date":self.index.as_ref().map(|i|i.session.game_date.as_str()),"summary":self.summary()})
+            "game_date":self.index.as_ref().map(|i|i.session.game_date.as_str()),
+            "diagnostic_context":self.connection.diagnostic_context,"summary":self.summary()})
     }
     fn connection_observe(&mut self, observation: Observation, now: Instant) -> Value {
         if !self.connection.enabled {
@@ -42,6 +46,12 @@ impl Bridge {
         }
         let mut changed = false;
         let mut date_changed = false;
+        self.connection.diagnostic_context=match &observation {
+            Observation::Ready(ready)=>Some(DiagnosticContext::from_ready(ready)),
+            Observation::UnsupportedBuild(_,context)=>*context,
+            Observation::ErrorWithContext(_,context)=>Some(*context),
+            _=>None,
+        };
         if let Observation::Ready(ref ready) = observation {
             if self.live && self.connection.attached.as_ref().is_some_and(|old|
                 old.identity == ready.identity && ready.game_date >= old.game_date) {
@@ -81,12 +91,12 @@ impl Bridge {
                 self.connection.state = "loading";
                 self.connection.reason = reason;
             }
-            Observation::Error(reason) => {
+            Observation::Error(reason) | Observation::ErrorWithContext(reason,_) => {
                 self.connection.candidate = None;
                 self.connection.state = "error";
                 self.connection.reason = reason;
             }
-            Observation::UnsupportedBuild(reason) => {
+            Observation::UnsupportedBuild(reason,_) => {
                 self.connection.candidate = None;
                 self.connection.state = "unsupported_build";
                 self.connection.reason = reason;
@@ -125,10 +135,14 @@ impl Bridge {
         self.connection.state = "connected";
         self.connection.reason.clear();
         self.connection.last_attempt = None;
+        self.connection.diagnostic_context=Some(DiagnosticContext::from_ready(self.connection.attached.as_ref().expect("attached")));
         Ok(())
     }
     fn initial_observation(&mut self, observation: Observation, now: Instant) -> Result<Ready> {
-        if let Observation::Ready(ready) = observation { return Ok(ready); }
+        if let Observation::Ready(ready) = observation {
+            self.connection.diagnostic_context=Some(DiagnosticContext::from_ready(&ready));
+            return Ok(ready);
+        }
         self.connection_observe(observation, now);
         // Permission errors, unknown builds and an unloaded save need different
         // actions. Return the actual probe reason, including its source chain.
@@ -175,6 +189,7 @@ impl Bridge {
                 Ok(result)
             }
             (Err(error), Observation::Ready(ready)) if ready.identity == before.identity => {
+                self.connection.diagnostic_context=Some(DiagnosticContext::from_ready(&ready));
                 crate::runtime_log::error("connection","index_failed","FM index read failed",&error);
                 self.connection.state = "error";
                 self.connection.reason = format!("FM 데이터 조회 실패: {error:#}");
@@ -336,11 +351,27 @@ mod tests {
         let (mut bridge, ready) = fixture();
         activate(&mut bridge, &ready);
         let reason = "FM27 unknown native build".to_owned();
-        let result = bridge.connection_observe(Observation::UnsupportedBuild(reason.clone()), Instant::now());
+        let result = bridge.connection_observe(Observation::UnsupportedBuild(reason.clone(),None), Instant::now());
         assert_eq!(result["state"], "unsupported_build");
         assert_eq!(result["reason"], reason);
         assert_eq!(result["can_reconnect"], false);
         assert!(bridge.index.is_none() && !bridge.live);
+    }
+    #[test]
+    fn unsupported_build_context_survives_failure_without_becoming_a_connection_grant() {
+        let (mut bridge,ready)=fixture();
+        activate(&mut bridge,&ready);
+        let context=DiagnosticContext::from_pe(0x12345678,0x12345000);
+        let result=bridge.connection_observe(Observation::UnsupportedBuild("unverified".into(),Some(context)),Instant::now());
+        let expected=serde_json::to_value(context).unwrap();
+        assert_eq!(result["diagnostic_context"],expected);
+        assert_eq!(result["summary"]["diagnostic_context"],expected);
+        assert!(!result["summary"]["connected"].as_bool().unwrap());
+        assert!(bridge.require_live().is_err());
+        for observation in [Observation::Absent,Observation::Waiting("loading".into()),Observation::Error("denied".into())] {
+            let result=bridge.connection_observe(observation,Instant::now());
+            assert!(result["diagnostic_context"].is_null());
+        }
     }
     #[test]
     fn stable_save_read_error_preserves_actual_failure_reason() {
@@ -358,7 +389,7 @@ mod tests {
         for (observation, state, reason) in [
             (Observation::Waiting("세이브 인물 목록이 비어 있습니다".into()), "loading", "세이브 인물 목록이 비어 있습니다"),
             (Observation::Error("FM 프로세스 접근 실패: os error 5".into()), "error", "FM 프로세스 접근 실패: os error 5"),
-            (Observation::UnsupportedBuild("지원하지 않는 빌드 ABCD".into()), "unsupported_build", "지원하지 않는 빌드 ABCD"),
+            (Observation::UnsupportedBuild("지원하지 않는 빌드 ABCD".into(),None), "unsupported_build", "지원하지 않는 빌드 ABCD"),
             (Observation::Absent, "waiting", crate::backend::discovery::LOCAL_GAME_GUIDANCE),
         ] {
             let mut bridge = Bridge::default();

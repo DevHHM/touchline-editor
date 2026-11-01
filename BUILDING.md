@@ -35,7 +35,7 @@ powershell -NoProfile -File .\build-wpf.ps1
 ```
 
 The builder runs tests, builds the Rust engine, publishes the self-contained WPF app, builds the native
-launcher and creates `dist/Touchline-Editor-0.14.3-win-x64.zip` with its SHA-256 sidecar. The output folder
+launcher and creates `dist/Touchline-Editor-0.14.5-win-x64.zip` with its SHA-256 sidecar. The output folder
 must be empty; existing release folders and ZIP files are not overwritten. The build uses a locally
 installed `dotnet` SDK; its SDK directory must contain the official .NET license/third-party notices.
 

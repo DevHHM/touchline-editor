@@ -12,7 +12,7 @@ public sealed class DiagnosticsWindow : Window
 {
  private readonly TextBlock _remoteStatus;
  public FrameworkElement Surface { get; }
- public DiagnosticsWindow()
+ public DiagnosticsWindow(Action? showTutorial = null)
  {
   Title="Touchline 도움말 · 진단";Width=700;Height=700;MinWidth=560;MinHeight=500;WindowStartupLocation=WindowStartupLocation.CenterOwner;
   Background=new SolidColorBrush(Color.FromRgb(20,27,38));Foreground=new SolidColorBrush(Color.FromRgb(231,238,247));FontSize=14;Typography.Initialize(this);
@@ -21,9 +21,23 @@ public sealed class DiagnosticsWindow : Window
   Surface=new Border{Background=Background,Child=scroll};Content=Surface;
   panel.Children.Add(Label("도움말 · 진단",24,true));
   panel.Children.Add(Label("Touchline Editor "+(DiagnosticsLog.Current?.Version??typeof(App).Assembly.GetName().Version?.ToString(3)),12));
+  if (showTutorial != null)
+  {
+   var tutorial = Action("처음 시작하기 · 안내 다시 보기", () => { Close(); Dispatcher.BeginInvoke(showTutorial); });
+   tutorial.HorizontalAlignment = HorizontalAlignment.Left;
+   tutorial.Margin = new Thickness(0, 16, 0, 0);
+   panel.Children.Add(tutorial);
+  }
+  panel.Children.Add(Label("편집과 능력치 고정",18,true,22));
+  panel.Children.Add(Label("값을 입력한 뒤 ‘변경 검토’에서 전·후 값을 확인하고 ‘백업 후 게임에 적용’을 누르세요. 일반 수치 수정은 FM 재시작 없이 적용됩니다. FM 화면을 다시 열어 확인하고 게임에서 저장하세요.",13,false,10));
+  panel.Children.Add(Label(EditorFeatureGuidance.Freeze,13,false,10));
+  panel.Children.Add(Label("FM27 지원 범위",18,true,22));
+  panel.Children.Add(Label(EditorFeatureGuidance.Fm27Limits,13,false,10));
+  panel.Children.Add(Label(EditorFeatureGuidance.Shortlists,13,false,10));
   panel.Children.Add(Label("로컬 진단 로그",18,true,22));
   panel.Children.Add(Label(LocalStatus(),13,false,10));
   panel.Children.Add(Label("연결 상태와 오류 원인을 이 PC에 기록합니다. 요청 인자·선수 정보·세이브·응답 데이터는 기록하지 않으며, 주소·개인 경로·토큰을 가립니다. 로그는 순환 보관됩니다.",13,false,12));
+  panel.Children.Add(Label("엔진 파일이나 engine 폴더가 없다는 오류는 배포 ZIP 전체를 새 폴더에 압축 해제하고 최상위 Touchline Editor.exe로 다시 실행해 주세요. exe만 따로 복사하면 연결할 수 없습니다.",13,false,12));
   var buttons=new WrapPanel{Margin=new Thickness(0,16,0,0)};
   buttons.Children.Add(Action("로그 폴더 열기",()=>OpenFolder(this)));
   buttons.Children.Add(Action("진단 로그 내보내기",()=>ExportLogs(this)));panel.Children.Add(buttons);
@@ -31,7 +45,7 @@ public sealed class DiagnosticsWindow : Window
   panel.Children.Add(Label("오류별 공유 동의",18,true,24));
   panel.Children.Add(Label("오류가 발생하면 해당 보고서를 공개 GitHub에 공유할지 먼저 묻습니다. 기본 선택은 ‘공유 안 함’이며, ‘이 오류 공유’를 눌러야 그 보고서만 전송합니다. 앞으로 발생할 오류까지 자동으로 동의하는 설정은 없습니다.",13,false,12));
   _remoteStatus=Label(DiagnosticSharing.Configured?DiagnosticSharing.Status:"오류 전송 서버가 아직 설정되지 않았습니다. 로컬 로그는 계속 저장됩니다.",13,false,10);panel.Children.Add(_remoteStatus);
-  panel.Children.Add(Label("동의한 경우에만 오류 코드·에디터 버전 등 제한된 진단 정보가 공개 GitHub 이슈로 전달되어 누구나 볼 수 있습니다. 원본 로그·오류 원문·요청 인자·세이브·사용자 경로는 전송하지 않습니다.",12,false,8));
+  panel.Children.Add(Label("동의창에서 전송할 전체 항목을 먼저 확인할 수 있습니다. 수집 서버가 지원하도록 배포 설정된 경우에만 정해진 오류 단계·예외 종류·확인된 빌드 출처·판매처를 포함합니다. 동의한 요약은 공개 GitHub 이슈로 전달되어 누구나 볼 수 있습니다. 원본 로그·오류 원문·요청 인자·세이브·사용자 경로는 전송하지 않습니다.",12,false,8));
   panel.Children.Add(Label("같은 오류의 동의창은 실행 중 한 번만 표시합니다. 다른 앱을 사용하는 중에는 에디터로 돌아올 때까지 기다립니다. 전송 주소·개인정보 안내·공개 범위가 바뀌면 다시 동의해야 합니다. 이미 공개된 보고서는 자동 삭제되지 않습니다.",12,false,8));
   if(DiagnosticSharing.Configured) {
    var send=Action("승인한 대기 보고 재전송",async()=>{try{await DiagnosticSharing.SendPendingAsync();}catch(Exception error){AppDialog.Show(this,DiagnosticsLog.Sanitize(error.Message),"진단 전송");}});

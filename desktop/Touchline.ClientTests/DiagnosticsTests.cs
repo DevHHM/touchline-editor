@@ -72,6 +72,59 @@ internal static class DiagnosticsTests
     check(records.Contains("\"event\":\"connect\"")&&records.Contains("\"event\":\"fail\"")&&records.Contains("engine_started")&&!records.Contains("REQUEST_SECRET")&&!records.Contains("PLAYER_NAME_SECRET")&&!records.Contains("backend-secret"),"diagnostics_fake_bridge_failure_persists_without_arguments_results_or_secret");
    }
    check(Directory.GetFiles(logs,"*.active").Length==0,"diagnostics_shutdown_releases_active_marker");
+   string contextLogs=Path.Combine(root,"ContextLogs");
+   using(var log=new DiagnosticsLog(contextLogs,"0.14.3")){
+    log.ObserveGameContext(JsonSerializer.SerializeToElement(new{connected=true,live=true,profile="FM27 / 6ADFB11C-19E69000",storefront="steam",player="PRIVATE_PLAYER",path="PRIVATE_PATH"}));
+    log.Failure("application","handled",new NullReferenceException("PRIVATE_MESSAGE"));
+    string Last()=>ReadAll(contextLogs).Split('\n').Last(line=>line.Contains("\"event\":\"handled\""));
+    var report=SharedDiagnosticReport.FromLocalRecord(Last(),2)!;
+    check(report.Build=="6ADFB11C-19E69000"&&report.BuildSource=="verified_session"&&report.Storefront=="steam"&&!ReadAll(contextLogs).Contains("PRIVATE_PLAYER")&&!ReadAll(contextLogs).Contains("PRIVATE_PATH"),"diagnostics_known_live_context_retains_allowlisted_build_storefront_without_summary_data");
+    string verifiedFingerprint=report.Fingerprint;
+    var verified=JsonSerializer.SerializeToElement(new{connected=true,live=true,profile="FM27 / 6ADFB11C-19E69000",storefront="steam",diagnostic_context=new{pe_timestamp=0x6ADFB11Cu,image_size=0x19E69000u,storefront="unknown"}});
+    log.ObserveConnectionContext(JsonSerializer.SerializeToElement(new{state="connected",summary=verified,diagnostic_context=new{pe_timestamp=0x6ADFB11Cu,image_size=0x19E69000u,storefront="unknown"}}));
+    log.Failure("application","handled",new NullReferenceException("after poll"));report=SharedDiagnosticReport.FromLocalRecord(Last(),2)!;
+    check(report.BuildSource=="verified_session"&&report.Fingerprint==verifiedFingerprint,"diagnostics_successful_poll_preserves_verified_session_provenance_and_fingerprint");
+    log.ObserveConnectionContext(verified);log.Failure("application","handled",new NullReferenceException("after connect"));
+    check(SharedDiagnosticReport.FromLocalRecord(Last(),2)!.BuildSource=="verified_session","diagnostics_successful_connect_summary_preserves_verified_build");
+    log.ObserveGameContext(JsonSerializer.SerializeToElement(new{connected=true,live=false,profile="FM27 / 6ADFB11C-19E69000",storefront="steam"}));
+    log.Failure("application","handled",new NullReferenceException("no context"));report=SharedDiagnosticReport.FromLocalRecord(Last(),2)!;
+    check(report.Build==null&&report.BuildSource=="unknown"&&report.Storefront=="unknown","diagnostics_snapshot_context_never_claims_verified_live_build");
+    log.ObserveGameContext(JsonSerializer.SerializeToElement(new{connected=true,live=true,profile="PRIVATE_PROFILE",storefront="PRIVATE_STORE"}));
+    log.Failure("application","handled",new NullReferenceException("unknown context"));report=SharedDiagnosticReport.FromLocalRecord(Last(),2)!;
+    check(report.Build==null&&report.Storefront=="unknown"&&!ReadAll(contextLogs).Contains("PRIVATE_PROFILE")&&!ReadAll(contextLogs).Contains("PRIVATE_STORE"),"diagnostics_unknown_build_and_storefront_are_not_recorded_as_free_text");
+    log.ObserveGameContext(JsonSerializer.SerializeToElement(new{connected=true,live=true,profile="FM27 / 6ADFB11C-19E69000"}));log.ClearGameContext();
+    log.Failure("application","handled",new NullReferenceException("cleared"));check(SharedDiagnosticReport.FromLocalRecord(Last(),2)!.Build==null,"diagnostics_session_invalidation_clears_known_build_context");
+    log.ObserveConnectionContext(JsonSerializer.SerializeToElement(new{diagnostic_context=new{pe_timestamp=0x12345678u,image_size=0x01234000u,storefront="unknown",module_path="PRIVATE_MODULE",pid=99999,base_address="PRIVATE_ADDRESS"}}));
+    log.Failure("application","handled",new InvalidOperationException("UnsupportedBuild"));report=SharedDiagnosticReport.FromLocalRecord(Last(),2)!;
+    check(report.Build=="12345678-01234000"&&report.BuildSource=="observed_pe"&&!ReadAll(contextLogs).Contains("PRIVATE_MODULE")&&!ReadAll(contextLogs).Contains("PRIVATE_ADDRESS"),"diagnostics_failed_connection_retains_only_numeric_pe_fingerprint_without_claiming_verified_profile");
+    log.ObserveConnectionContext(JsonSerializer.SerializeToElement(new{diagnostic_context=new{pe_timestamp="PRIVATE_TIMESTAMP",image_size=-1,storefront="PRIVATE_STORE"}}));
+    log.Failure("application","handled",new InvalidOperationException("invalid context"));report=SharedDiagnosticReport.FromLocalRecord(Last(),2)!;
+    check(report.Build==null&&report.Storefront=="unknown"&&!ReadAll(contextLogs).Contains("PRIVATE_TIMESTAMP"),"diagnostics_malformed_connection_context_is_ignored_and_clears_stale_identity");
+    int beforeBuildChange=Events(contextLogs,"context_dedup");
+    log.ObserveConnectionContext(JsonSerializer.SerializeToElement(new{diagnostic_context=new{pe_timestamp=0x12345678u,image_size=0x01234000u}}));log.Failure("application","context_dedup",new IOException("same error"),"same_context_error");
+    log.ObserveConnectionContext(JsonSerializer.SerializeToElement(new{diagnostic_context=new{pe_timestamp=0x12345679u,image_size=0x01234000u}}));log.Failure("application","context_dedup",new IOException("same error"),"same_context_error");
+    check(Events(contextLogs,"context_dedup")==beforeBuildChange+2,"diagnostics_dedup_keeps_identical_failures_from_different_build_contexts");
+    await using(var queuedBridge=new BridgeClient(Environment.ProcessPath!,log)) {
+     var poll=queuedBridge.CallAsync("connection_poll",new{delayedContextForDiagnostics=true});
+     var snapshot=queuedBridge.CallAsync("load_snapshot",new{failSnapshotForDiagnostics=true});
+     await poll;bool refused=false;try{await snapshot;}catch(BridgeException){refused=true;}
+     log.Failure("application","handled",new InvalidOperationException("after rejected snapshot"));
+     report=SharedDiagnosticReport.FromLocalRecord(Last(),2)!;
+     check(refused&&report.Build==null&&report.BuildSource=="unknown","diagnostics_queued_snapshot_clears_prior_inflight_poll_context_after_lock");
+    }
+    await using(var bridge=new BridgeClient(Environment.ProcessPath!,log)) {
+     bool rejected=false;try{await bridge.CallAsync("connect",new{observedPeForDiagnostics=true});}catch(BridgeException){rejected=true;}
+     string commandRecord=ReadAll(contextLogs).Split('\n').Last(line=>line.Contains("\"event\":\"connect\""));
+     report=SharedDiagnosticReport.FromLocalRecord(commandRecord,2)!;
+     check(rejected&&report.Build=="12345678-01234000"&&report.BuildSource=="observed_pe"&&report.Code=="unsupported_build"&&report.FailureStage=="connect",
+      "diagnostics_bridge_failed_connect_keeps_observed_pe_before_logging_exception");
+     check(!ReadAll(contextLogs).Contains("PRIVATE_PE_PATH")&&!ReadAll(contextLogs).Contains("PRIVATE_PE_ADDRESS"),"diagnostics_bridge_context_excludes_extra_path_and_address_fields");
+     bool lost=false;try{await bridge.CallAsync("connect",new{malformedForDiagnostics=true});}catch(BridgeException){lost=true;}
+     commandRecord=ReadAll(contextLogs).Split('\n').Last(line=>line.Contains("\"event\":\"connect\""));
+     report=SharedDiagnosticReport.FromLocalRecord(commandRecord,2)!;
+     check(lost&&report.Build==null&&report.BuildSource=="unknown","diagnostics_new_connect_transport_failure_never_reuses_previous_pe_context");
+    }
+   }
    string denied=Path.Combine(root,"blocked");File.WriteAllText(denied,"keep");
    using(var broken=new DiagnosticsLog(denied,"test")) {
     broken.Failure("connection","failed",new IOException("original"));

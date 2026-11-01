@@ -18,6 +18,12 @@ mod growth;
 mod leagues;
 mod memory;
 mod native_alloc;
+#[cfg(feature = "fm27-health-experiment")]
+mod native_health;
+#[cfg(feature = "fm27-health-experiment")]
+mod native_bans;
+#[cfg(feature = "fm27-transfer-experiment")]
+mod native_transfer;
 mod name_localization;
 mod model;
 mod navigation;

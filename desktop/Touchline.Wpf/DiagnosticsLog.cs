@@ -22,6 +22,9 @@ public sealed class DiagnosticsLog : IDisposable
  private FileStream? _stream, _marker;
  private int _part;
  private bool _disposed;
+ private string? _gameBuild;
+ private string? _observedPeBuild;
+ private string _storefront="unknown";
  public string DirectoryPath { get; }
  public string Version { get; }
  public string Session { get; } = Guid.NewGuid().ToString("N");
@@ -30,6 +33,36 @@ public sealed class DiagnosticsLog : IDisposable
  /// <summary>Sanitized immutable JSON, dispatched off the caller thread. Handlers should only enqueue bounded work.</summary>
  public event Action<string>? RecordWritten;
  public static DiagnosticsLog? Current { get; set; }
+
+ /// <summary>Keep only fixed metadata from an already verified live summary; never probe the game.</summary>
+ public void ObserveGameContext(JsonElement summary)
+ {
+  lock(_gate){
+   _gameBuild=null;_observedPeBuild=null;_storefront="unknown";
+   if(summary.ValueKind!=JsonValueKind.Object||!summary.TryGetProperty("connected",out var connected)||connected.ValueKind!=JsonValueKind.True||
+      !summary.TryGetProperty("live",out var live)||live.ValueKind!=JsonValueKind.True)return;
+   if(summary.TryGetProperty("profile",out var profile)&&profile.ValueKind==JsonValueKind.String)_gameBuild=SharedDiagnosticReport.RecognizedBuild(profile.GetString()??"");
+   if(summary.TryGetProperty("storefront",out var storefront)&&storefront.ValueKind==JsonValueKind.String&&SharedDiagnosticReport.Storefronts.Contains(storefront.GetString()))_storefront=storefront.GetString()!;
+  }
+ }
+ /// <summary>Failed-connection context contains PE header integers, never module paths or addresses.</summary>
+ public void ObserveConnectionContext(JsonElement observation)
+ {
+  lock(_gate){
+   _gameBuild=null;_observedPeBuild=null;_storefront="unknown";
+   if(observation.ValueKind!=JsonValueKind.Object)return;
+   // Poll responses carry the current verified session under summary. Do not
+   // downgrade its provenance on every successful two-second observation.
+   var session=observation.TryGetProperty("summary",out var nested)&&nested.ValueKind==JsonValueKind.Object?nested:observation;
+   if(session.TryGetProperty("connected",out var connected)&&connected.ValueKind==JsonValueKind.True&&
+      session.TryGetProperty("live",out var live)&&live.ValueKind==JsonValueKind.True){ObserveGameContext(session);if(_gameBuild!=null)return;}
+   if(!observation.TryGetProperty("diagnostic_context",out var context)||context.ValueKind!=JsonValueKind.Object)return;
+   if(context.TryGetProperty("pe_timestamp",out var timestamp)&&timestamp.ValueKind==JsonValueKind.Number&&timestamp.TryGetUInt32(out uint stamp)&&
+      context.TryGetProperty("image_size",out var image)&&image.ValueKind==JsonValueKind.Number&&image.TryGetUInt32(out uint size)&&size>0)_observedPeBuild=$"{stamp:X8}-{size:X8}";
+   if(context.TryGetProperty("storefront",out var storefront)&&storefront.ValueKind==JsonValueKind.String&&SharedDiagnosticReport.Storefronts.Contains(storefront.GetString()))_storefront=storefront.GetString()!;
+  }
+ }
+ public void ClearGameContext(){lock(_gate){_gameBuild=null;_observedPeBuild=null;_storefront="unknown";}}
 
  public DiagnosticsLog(string directory, string version, int partBytes = DefaultPartBytes)
  {
@@ -66,10 +99,10 @@ public sealed class DiagnosticsLog : IDisposable
   try {
    lock(_gate) {
     if(_disposed) return;
-    string signature = Name(category)+"|"+Name(eventName)+"|"+message+"|"+JsonSerializer.Serialize(causes);
+    string signature = Name(category)+"|"+Name(eventName)+"|"+message+"|"+JsonSerializer.Serialize(causes)+"|"+_gameBuild+"|"+_observedPeBuild+"|"+_storefront;
     if(dedupKey != null && _last.TryGetValue(dedupKey, out var prior) && prior == signature && IsAvailable) return;
     EnsureOpen();
-    string json = JsonSerializer.Serialize(new { timestamp = DateTimeOffset.UtcNow.ToString("O"), version = Version, session = Session, source = "client", level = Name(level), category = Name(category), @event = Name(eventName), message, causes });
+    string json = JsonSerializer.Serialize(new { timestamp = DateTimeOffset.UtcNow.ToString("O"), version = Version, session = Session, source = "client", level = Name(level), category = Name(category), @event = Name(eventName), message, causes, game_build=_gameBuild, observed_pe_build=_observedPeBuild, storefront=_storefront });
     byte[] bytes = Encoding.UTF8.GetBytes(json+"\n");
     if(_stream!.Length + bytes.Length > _partBytes && _stream.Length > 0) Rotate();
     _stream!.Write(bytes); _stream.Flush(); LastFailure = null; written = json;
@@ -151,7 +184,10 @@ public sealed class DiagnosticsLog : IDisposable
      string Part(string key)=>cause.TryGetProperty(key,out var item)&&item.ValueKind==JsonValueKind.String?Sanitize(item.GetString()):"";
      causes.Add(new {type=Part("type"),message=Part("message")});
     }
-   return JsonSerializer.Serialize(new { timestamp=stamp.GetString(),version=Read("version"),session=expectedSession,source=expectedSource,level=Name(Read("level")),category=Name(Read("category")),@event=Name(Read("event")),message=Read("message"),causes });
+   string? build=Read("game_build") is "6ADFB11C-19E69000" or "6A229E8A-1EB41000"?Read("game_build"):null;
+   string storefront=SharedDiagnosticReport.Storefronts.Contains(Read("storefront"))?Read("storefront"):"unknown";
+   string? observedPe=SharedDiagnosticReport.IsPeBuild(Read("observed_pe_build"))?Read("observed_pe_build"):null;
+   return JsonSerializer.Serialize(new { timestamp=stamp.GetString(),version=Read("version"),session=expectedSession,source=expectedSource,level=Name(Read("level")),category=Name(Read("category")),@event=Name(Read("event")),message=Read("message"),causes,game_build=build,observed_pe_build=observedPe,storefront });
   } catch { return null; }
  }
  public string Export(string destination)
