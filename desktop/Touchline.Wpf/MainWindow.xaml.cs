@@ -1,4 +1,4 @@
-﻿using System.ComponentModel;
+using System.ComponentModel;
 using System.Globalization;
 using System.IO;
 using System.Text.Json;
@@ -273,12 +273,12 @@ public partial class MainWindow : Window
   if(d.Entity.Kind=="Club"&&_tab=="스태프") {await RenderStaffReviewAsync(d,renderVersion);return;}
   if(d.Entity.Kind=="Club"&&_tab=="선수단") {await RenderClubRosterAsync(d,renderVersion);return;}
   if(d.Entity.Kind=="Club"&&_tab=="후원·구장") {await RenderSponsors(d,renderVersion);return;}
-  var controlLine=new DockPanel { Margin=new(0,0,0,12) };var precision=new CheckBox {Content="세부값",Foreground=ResourceBrush("MutedBrush"),IsChecked=_precision,FontSize=11,VerticalAlignment=VerticalAlignment.Center};DockPanel.SetDock(precision,Dock.Right);controlLine.Children.Add(precision);precision.Checked+=PrecisionChanged;precision.Unchecked+=PrecisionChanged;controlLine.Children.Add(Text(_tab=="직무 점수"?"사용자 계산식 · 변경 초안 즉시 반영":"능력치 · 숫자를 선택하여 수정",11,"#929FB3"));DetailHost.Children.Add(controlLine);
+  var controlLine=new DockPanel { Margin=new(0,0,0,12) };var precision=new CheckBox {Content="세부값",Foreground=ResourceBrush("MutedBrush"),IsChecked=_precision,FontSize=11,VerticalAlignment=VerticalAlignment.Center};DockPanel.SetDock(precision,Dock.Right);controlLine.Children.Add(precision);precision.Checked+=PrecisionChanged;precision.Unchecked+=PrecisionChanged;controlLine.Children.Add(Text(_tab=="직무 점수"?"사용자 계산식 · 변경 초안 즉시 반영":_tab=="계약·신상"?"계약·신상 · 확인된 항목만 편집할 수 있습니다.":"능력치 · 숫자를 선택하여 수정",11,"#929FB3"));DetailHost.Children.Add(controlLine);
   IEnumerable<IGrouping<string,EditableField>> groups;
   if(d.Entity.Kind=="Staff"&&_tab=="직무 점수") { _scoresHost=new StackPanel();DetailHost.Children.Add(_scoresHost);RenderScores(d.Scores);return; }
   if(_tab=="성격·히든") groups=d.Fields.Where(f=>f.Section is "성격" or "경기 히든").GroupBy(f=>f.Section);
   else if(_tab=="선수 특성") groups=d.Fields.Where(f=>f.Section=="선수 특성").GroupBy(f=>TraitGroup(f.Key));
-  else if(_tab=="계약·신상") groups=d.Fields.Where(f=>f.Key.StartsWith("contract.")||f.Key.StartsWith("person.")||f.Key.StartsWith("player.")||f.Key.Contains("reputation")).GroupBy(f=>f.Section);
+  else if(_tab=="계약·신상") { DetailHost.Children.Add(ContractDatesCard(d)); groups=d.Fields.Where(f=>!DateFieldPresentation.IsContractDate(f.Key)&&(f.Key.StartsWith("contract.")||f.Key.StartsWith("person.")||f.Key.StartsWith("player.")||f.Key.Contains("reputation"))).GroupBy(f=>f.Section); }
   else if(_tab=="포지션") {DetailHost.Children.Add(BuildPitch(d));groups=d.Fields.Where(f=>f.Section=="포지션").GroupBy(f=>f.Section);}
   else if(_tab=="재정")groups=d.Fields.Where(f=>f.Section=="재정").GroupBy(f=>f.Section);
   else if(_tab=="전체 능력치")groups=d.Fields.GroupBy(f=>f.Section);
@@ -296,14 +296,14 @@ public partial class MainWindow : Window
    var overview=new Border {CornerRadius=new(8),Background=ResourceBrush("PanelBrush"),Padding=new(15),Margin=new(7,0,0,0)};Grid.SetColumn(overview,1);var note=new StackPanel();note.Children.Add(Text("선수 관리",13,null,true));note.Children.Add(Text("성격·히든과 포지션은 위 탭에서 조정할 수 있습니다.",12,"#929FB3"));note.Children.Add(Text("개별 능력치를 바꿔도 CA는 자동 계산되지 않습니다.",11,"#BDAB8A"));foreach(var t in note.Children.OfType<TextBlock>())t.Margin=new(0,0,0,10);overview.Child=note;lower.Children.Add(overview);DetailHost.Children.Add(lower);
   }
   if(d.Entity.Kind=="Staff"&&_tab=="개요") { _scoresHost=new StackPanel {Margin=new(0,16,0,0)};DetailHost.Children.Add(_scoresHost);RenderScores(d.Scores,true); }
-  if(d.Notes.Count>0) {var notes=new StackPanel {Margin=new(0,16,0,0)};foreach(var n in d.Notes){var text=Text(n,11,"#8190A5");text.Margin=new(0,0,0,5);notes.Children.Add(text);}DetailHost.Children.Add(notes);}
+  if(d.Notes.Count>0) {var notes=new StackPanel {Margin=new(0,16,0,0)};foreach(var n in d.Notes){if(_tab=="계약·신상"&&n.Contains("계약",StringComparison.Ordinal))continue;var text=Text(n,11,"#8190A5");text.Margin=new(0,0,0,5);notes.Children.Add(text);}DetailHost.Children.Add(notes);}
  }
  private Border FieldCard(string title,IEnumerable<EditableField> fields)
  {
   var stack=new StackPanel();var head=new DockPanel {Margin=new(0,0,0,10)};head.Children.Add(Text(title,14,null,true));stack.Children.Add(head);
   int index=0;foreach(var f in fields) {
    if(f.Key.StartsWith("trait_")) {var check=new CheckBox {Content=new TextBlock{Text=f.Label,TextWrapping=TextWrapping.Wrap,FontSize=12},DataContext=f,ToolTip=f.Hint,IsEnabled=f.Editable,Margin=new(3,6,3,6)};check.SetBinding(CheckBox.IsCheckedProperty,new Binding("EditText"){Mode=BindingMode.TwoWay,UpdateSourceTrigger=UpdateSourceTrigger.PropertyChanged,Converter=new BitTextConverter()});stack.Children.Add(check);continue;}
-   if(f.Key is "person.dob" or "contract.expires") {var dateRow=new DockPanel{Margin=new(0,5,0,5)};var picker=new DatePicker{DataContext=f,Width=142,IsEnabled=f.Editable,ToolTip=f.Hint,SelectedDateFormat=DatePickerFormat.Short};picker.SetBinding(DatePicker.SelectedDateProperty,new Binding("EditText"){Mode=BindingMode.TwoWay,Converter=new DateTextConverter()});DockPanel.SetDock(picker,Dock.Right);dateRow.Children.Add(picker);dateRow.Children.Add(Text(f.Label,12,"#BFC9D9"));stack.Children.Add(dateRow);continue;}
+   if(DateFieldPresentation.IsDate(f.Key)) {stack.Children.Add(new DateFieldEditor(f));continue;}
    var row=new Grid {Height=29,DataContext=f,ToolTip=f.Hint};var rowStyle=new Style(typeof(Grid));rowStyle.Setters.Add(new Setter(BackgroundProperty,index++%2==0?Brush("#1D2633"):Brush("Transparent")));var dirtyTrigger=new DataTrigger {Binding=new Binding("IsDirty"),Value=true};dirtyTrigger.Setters.Add(new Setter(BackgroundProperty,Brush("#344137")));rowStyle.Triggers.Add(dirtyTrigger);row.Style=rowStyle;row.ColumnDefinitions.Add(new(){Width=new(1,GridUnitType.Star)});row.ColumnDefinitions.Add(new(){Width=new(f.Max>100000?115:f.Max>200?75:46)});
    var label=Text(f.Label,12,"#BFC9D9");label.Margin=new(7,0,6,0);label.TextWrapping=TextWrapping.NoWrap;label.TextTrimming=TextTrimming.CharacterEllipsis;row.Children.Add(label);
    var edit=new TextBox {DataContext=f,Padding=new(3,2,6,2),BorderThickness=new(0),Background=Brush("Transparent"),FontSize=13,FontWeight=FontWeights.Bold,HorizontalContentAlignment=HorizontalAlignment.Right,VerticalContentAlignment=VerticalAlignment.Center,IsReadOnly=!f.Editable,ToolTip=$"{f.Label} · {f.Min:G}–{f.Max:G}\n{f.Hint}"};Grid.SetColumn(edit,1);edit.SetBinding(TextBox.TextProperty,new Binding("EditText") {Mode=BindingMode.TwoWay,UpdateSourceTrigger=UpdateSourceTrigger.PropertyChanged,ValidatesOnDataErrors=true});edit.SetBinding(TextBox.ForegroundProperty,new Binding("ColorHex"));
@@ -321,13 +321,13 @@ public partial class MainWindow : Window
  private void FieldChanged(object? sender,PropertyChangedEventArgs e)
  {
   if(e.PropertyName!=nameof(EditableField.IsDirty)||_detail==null)return;
-  int dirty=_detail.Fields.Count(f=>f.IsDirty);bool valid=_detail.Fields.All(f=>f.IsValid);DirtyBar.Visibility=dirty>0?Visibility.Visible:Visibility.Collapsed;DirtyLabel.Text=valid?$"{dirty}개 항목 변경됨  ·  아직 게임에 적용되지 않았습니다.":"입력값의 허용 범위를 확인하세요.";ReviewButton.IsEnabled=dirty>0&&valid;
+  int dirty=_detail.Fields.Count(f=>f.IsDirty);bool valid=_detail.Fields.All(f=>f.IsValid)&&DraftDateError==null;DirtyBar.Visibility=dirty>0?Visibility.Visible:Visibility.Collapsed;DirtyLabel.Text=valid?$"{dirty}개 항목 변경됨  ·  아직 게임에 적용되지 않았습니다.":DraftDateError??"입력값의 허용 범위를 확인하세요.";ReviewButton.IsEnabled=dirty>0&&valid;
   RefreshAbilityReviewAvailability();
   if(_detail.Entity.Kind=="Staff") {_scoreTimer.Stop();_scoreTimer.Start();}
  }
  private async Task RefreshDraftScores()
  {
-  if(_bridge==null||_detail?.Entity.Kind!="Staff"||_detail.Fields.Any(f=>!f.IsValid))return;
+  if(_bridge==null||_detail?.Entity.Kind!="Staff"||_detail.Fields.Any(f=>!f.IsValid)||DraftDateError!=null)return;
   var d=_detail;int version=++_scoreVersion;
   try {var p=await _bridge.CallAsync("preview",new{kind=d.Entity.Kind,id=d.Entity.Id,edits=d.Fields.Where(f=>f.IsDirty).Select(f=>new{key=f.Key,value=f.Value}).ToArray()});if(version!=_scoreVersion||_detail!=d)return;if(p.TryGetProperty("scores",out var scores)){d.Scores=scores.Clone();RenderScores(scores,_tab=="개요");}}catch(Exception ex){Status(ex.Message);}
  }
@@ -406,6 +406,8 @@ public partial class MainWindow : Window
   if(App.Arg("--detailed-search-check")=="true") await RunDetailedSearchQaAsync(dir);
   if(App.Arg("--connection-ui-check")=="true") await RunConnectionPresentationQaAsync(dir);
   if(App.Arg("--ability-visibility-check")=="true") await RunAbilityVisibilityQaAsync(dir);
+  if(App.Arg("--contract-dates-check")=="true") await RunContractDatesQaAsync(dir);
+  if(App.Arg("--tutorial-tour-check")=="true") await RunTutorialTourQaAsync(dir);
   if(App.Arg("--smoke")=="all") {
    var original=_detail?.Entity;
    if(_detail!=null) {var field=_detail.Fields.First(f=>f.Editable&&f.Max>f.Value);var before=field.Original;field.Adjust(1);if(!field.IsDirty)throw new Exception("edit did not mark dirty");var p=await _bridge.CallAsync("preview",new{kind=_detail.Entity.Kind,id=_detail.Entity.Id,edits=new[]{new{key=field.Key,value=field.Value}}});if(p.GetProperty("can_apply").GetBoolean())throw new Exception("offline preview unexpectedly writable");await ShowReview(p);field.Reset();if(field.IsDirty||field.Value!=before)throw new Exception("reset lost precise original");_qaChecks.Add("edit_preview_and_reset_preserve_original");}

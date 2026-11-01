@@ -4,6 +4,7 @@
 //! baseline, persistent backup, compare/readback, rollback and undo transaction.
 use crate::{backend, fields, memory::Process, model::*};
 use anyhow::{Context, Result, ensure};
+mod contract_dates;
 
 /// Parse the public numeric YYYYMMDD representation with Gregorian validation.
 pub fn date_parts(value: f64) -> Result<(u32, u32, u32)> {
@@ -162,7 +163,7 @@ pub fn append(p: &Process, session: &Session, out: &mut Detail) {
     }
     // FM27 contract/health/finance records are not certified by the common
     // person/core-attribute layout. Do not display plausible but unverified data.
-    if !crate::compatibility::legacy_layout(session) { return; }
+    if !crate::compatibility::legacy_layout(session) { contract_dates::append(p, session, out); return; }
     if out.entity.kind == EntityKind::Player {
         for (key, label, offset) in [
             ("player.market_value", "기준 시장 가치 (£)", 0x234),
@@ -288,6 +289,7 @@ const CAPACITY_KEYS: [&str; 3] = [
 
 /// Validate the final draft as a whole, including unchanged capacity members.
 pub fn validate_edits(detail: &Detail, edits: &[Edit]) -> Result<()> {
+    contract_dates::validate_edits(detail, edits)?;
     if !edits
         .iter()
         .any(|edit| CAPACITY_KEYS.contains(&edit.key.as_str()))
@@ -334,9 +336,9 @@ pub fn dependency_guards(detail: &Detail, changes: &[Change]) -> Result<Vec<Guar
         .iter()
         .any(|change| CAPACITY_KEYS.contains(&change.key.as_str()))
     {
-        return Ok(Vec::new());
+        return Ok(contract_dates::dependency_guards(detail, changes));
     }
-    let mut guards = Vec::new();
+    let mut guards = contract_dates::dependency_guards(detail, changes);
     for key in CAPACITY_KEYS {
         if changes.iter().any(|change| change.key == key) {
             continue;

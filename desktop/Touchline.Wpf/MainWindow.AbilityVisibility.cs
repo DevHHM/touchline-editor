@@ -67,9 +67,9 @@ public partial class MainWindow
   if (_detail == null) return;
   var dirty = _detail.Fields.Where(field => field.IsDirty).ToList();
   bool hiddenDraft = dirty.Any(field => AbilityVisibility.Current.IsHidden(field.Key));
-  ReviewButton.IsEnabled = dirty.Count > 0 && _detail.Fields.All(field => field.IsValid) && !hiddenDraft;
+  ReviewButton.IsEnabled = dirty.Count > 0 && _detail.Fields.All(field => field.IsValid) && DraftDateError == null && !hiddenDraft;
   if (hiddenDraft) DirtyLabel.Text = "숨긴 CA·PA에 변경 초안이 있습니다. 표시를 켜서 확인한 뒤 적용하세요.";
-  else if (dirty.Count > 0) DirtyLabel.Text = _detail.Fields.All(field => field.IsValid) ? $"{dirty.Count}개 항목 변경됨  ·  아직 게임에 적용되지 않았습니다." : "입력값의 허용 범위를 확인하세요.";
+  else if (dirty.Count > 0) DirtyLabel.Text = DraftDateError ?? (_detail.Fields.All(field => field.IsValid) ? $"{dirty.Count}개 항목 변경됨  ·  아직 게임에 적용되지 않았습니다." : "입력값의 허용 범위를 확인하세요.");
  }
  private bool ConfirmAbilityExport() => !AbilityVisibility.Current.AnyHidden || AppDialog.Show(this,
   "숨기기는 화면 표시 설정입니다. 내보내는 원본 스냅샷에는 CA·PA 숫자가 포함됩니다. 계속할까요?",

@@ -16,7 +16,7 @@ public static class DiagnosticsConsentPrompt
   return await app.Dispatcher.InvokeAsync(async()=>{
    // Do not activate the editor over FM/another app or stack over an existing modal error.
    while(!token.IsCancellationRequested&&!app.Dispatcher.HasShutdownStarted){
-    if(app.MainWindow is{IsActive:true,IsEnabled:true,IsVisible:true,WindowState:not WindowState.Minimized} owner){
+    if(app.MainWindow is{IsActive:true,IsEnabled:true,IsVisible:true,WindowState:not WindowState.Minimized} owner && owner is not MainWindow { IsTutorialOpen: true }){
      token.ThrowIfCancellationRequested();var dialog=new ConsentWindow(owner,report,collector);
      using var registration=token.Register(()=>{try{if(!dialog.Dispatcher.HasShutdownStarted)dialog.Dispatcher.BeginInvoke(()=>dialog.Close());}catch{}});
      try{dialog.ShowDialog();return dialog.Accepted&&!token.IsCancellationRequested;}

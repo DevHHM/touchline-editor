@@ -14,6 +14,7 @@
     <Compile Include="../Touchline.Wpf/BridgeSession.cs" Link="BridgeSession.cs" />
     <Compile Include="../Touchline.Wpf/ConnectionPresentation.cs" Link="ConnectionPresentation.cs" />
     <Compile Include="../Touchline.Wpf/Models.cs" Link="Models.cs" />
+    <Compile Include="../Touchline.Wpf/DateFieldPresentation.cs" Link="DateFieldPresentation.cs" />
     <Compile Include="../Touchline.Wpf/AbilityVisibility.cs" Link="AbilityVisibility.cs" />
     <Compile Include="../Touchline.Wpf/PositionOrder.cs" Link="PositionOrder.cs" />
     <Compile Include="../Touchline.Wpf/SearchCriteria.cs" Link="SearchCriteria.cs" />
@@ -30,6 +31,7 @@
     <Compile Include="../Touchline.Wpf/DesktopWindowPreferences.cs" Link="DesktopWindowPreferences.cs" />
     <Compile Include="../Touchline.Wpf/UiScalePreferences.cs" Link="UiScalePreferences.cs" />
     <Compile Include="../Touchline.Wpf/TutorialPreferences.cs" Link="TutorialPreferences.cs" />
+    <Compile Include="../Touchline.Wpf/TutorialTour.cs" Link="TutorialTour.cs" />
     <Compile Include="../Touchline.Wpf/EditorShortcuts.cs" Link="EditorShortcuts.cs" />
   </ItemGroup>
 </Project>

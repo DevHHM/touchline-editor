@@ -45,6 +45,9 @@ public partial class MainWindow
 
  private void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)
  {
+  // The in-window guide owns keyboard navigation until it is closed. In particular,
+  // Ctrl+S/F5/F1 must not open reviews, refresh the game or stack another dialog.
+  if (_tutorialOverlay != null) return;
   var modifiers = ShortcutModifiers.None;
   if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control)) modifiers |= ShortcutModifiers.Control;
   if (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift)) modifiers |= ShortcutModifiers.Shift;

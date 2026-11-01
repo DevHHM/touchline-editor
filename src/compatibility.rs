@@ -38,7 +38,7 @@ pub fn constrain_detail(session: &Session, detail: &mut Detail) {
 fn listed(keys: &str, key: &str) -> bool { keys.split_ascii_whitespace().any(|v| v == key) }
 pub fn allowed_fm27_field(kind: EntityKind, key: &str) -> bool {
     if matches!(kind, EntityKind::Player | EntityKind::Staff)
-        && listed("adaptability ambition loyalty pressure professionalism sportsmanship temperament controversy person.dob", key) {
+        && listed("adaptability ambition loyalty pressure professionalism sportsmanship temperament controversy person.dob contract.starts contract.expires", key) {
         return true;
     }
     match kind {
@@ -70,9 +70,12 @@ pub fn allowed_fm27_field(kind: EntityKind, key: &str) -> bool {
 pub fn capabilities(session: &Session) -> serde_json::Value {
     let core = profiles::can_write(session);
     let legacy = legacy_layout(session);
+    let fm27 = profiles::profile_for_session(session).is_some_and(|profile| profile.id == profiles::FM27.id && profile.read_verified);
     serde_json::json!({
         "scalar_edit": core,
         "extended_fields": legacy,
+        "contract_start_date": fm27,
+        "contract_expiry_date": legacy || fm27,
         "relations": legacy,
         "career_plans": legacy,
         "sponsor_events": legacy,
@@ -106,6 +109,18 @@ mod tests {
         assert!(require_scalar_write(&s).is_err());
     }
     #[test]
+    fn contract_date_capabilities_are_exact_build_scoped() {
+        let mut s=session();
+        assert_eq!(capabilities(&s)["contract_start_date"],false);
+        assert_eq!(capabilities(&s)["contract_expiry_date"],true);
+        s.profile=profiles::FM27.label.into();s.module_stamp=profiles::FM27.timestamp;s.module_size=profiles::FM27.image_size;
+        assert_eq!(capabilities(&s)["contract_start_date"],true);
+        assert_eq!(capabilities(&s)["contract_expiry_date"],true);
+        s.module_stamp+=1;
+        assert_eq!(capabilities(&s)["contract_start_date"],false);
+        assert_eq!(capabilities(&s)["contract_expiry_date"],false);
+    }
+    #[test]
     fn field_families_are_explicit_and_kind_qualified() {
         assert!(allowed_fm27_field(EntityKind::Player,"passing"));
         assert!(!allowed_fm27_field(EntityKind::Staff,"passing"));
@@ -126,9 +141,9 @@ mod tests {
         }
     }
     #[test]
-    fn fm27_actual_contract_and_health_keys_are_not_advertised() {
+    fn fm27_uncertified_contract_and_health_keys_are_not_advertised() {
         // Use the real keys from extended.rs, not the unrelated contract.wage typo.
-        for key in ["contract.weekly_wage", "contract.expires", "contract.listed",
+        for key in ["contract.weekly_wage", "contract.listed",
             "contract.listed_by_request", "contract.not_for_sale", "contract.set_for_release",
             "contract.squad_number", "player.market_value", "player.asking_price",
             "player.injured", "player.banned", "team_cohesion"] {
@@ -140,6 +155,11 @@ mod tests {
         for key in ["morale", "injury_proneness"] {
             assert!(allowed_fm27_field(EntityKind::Player, key));
         }
+        for key in ["contract.starts", "contract.expires"] {
+            for kind in EntityKind::ALL {
+                assert_eq!(allowed_fm27_field(kind,key),matches!(kind,EntityKind::Player|EntityKind::Staff));
+            }
+        }
     }
     #[test]
     fn fm27_detail_strips_legacy_contract_bindings_before_preview() {
@@ -149,7 +169,7 @@ mod tests {
         s.module_stamp = profiles::FM27.timestamp;
         s.module_size = profiles::FM27.image_size;
         for kind in [EntityKind::Player, EntityKind::Staff] {
-            let keys = ["ca", "contract.weekly_wage", "contract.expires", "contract.listed",
+            let keys = ["ca", "contract.weekly_wage", "contract.listed",
                 "contract.squad_number", "player.injured", "player.banned"];
             let mut detail = Detail {
                 entity: Entity { id:7, kind, name:"Synthetic".into(), english_name:String::new(),

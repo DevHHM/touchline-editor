@@ -38,7 +38,7 @@ public sealed class ScalarReviewWindow : Window
    string? key = change.TryGetProperty("key", out var fieldKey) ? fieldKey.GetString() : null;
    var row = new StackPanel();
    row.Children.Add(Text(change.GetProperty("label").GetString() ?? "", 13));
-   var values = Text($"{AbilityVisibility.Current.Format(key, change.GetProperty("before"))}  →  {AbilityVisibility.Current.Format(key, change.GetProperty("after"))}", 14, true);
+   var values = Text($"{DateFieldPresentation.FormatChange(key, change.GetProperty("before"))}  →  {DateFieldPresentation.FormatChange(key, change.GetProperty("after"))}", 14, true);
    values.Foreground = Brush("AccentBrush"); row.Children.Add(values);
    body.Children.Add(new Border { Background = Brush("PanelBrush"), Padding = new Thickness(12), Margin = new Thickness(0, 0, 0, 6), CornerRadius = new CornerRadius(6), Child = row });
   }

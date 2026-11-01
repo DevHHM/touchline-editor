@@ -94,9 +94,11 @@ await DiagnosticsTests.RunAsync(Check);
 await DiagnosticSharingTests.RunAsync(Check);
 GameEditionTests.Run(Check);
 DetailPresentationTests.Run(Check);
+ContractDateTests.Run(Check);
 PackagePathsTests.Run(Check);
 DesktopUsabilityTests.Run(Check);
 TutorialTests.Run(Check);
+TutorialTourTests.Run(Check);
 AbilityVisibilityTests.Run(Check);
 await ClubGrowthAvailabilityTests.RunAsync(Check);
 

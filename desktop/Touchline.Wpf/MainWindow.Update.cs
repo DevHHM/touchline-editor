@@ -106,7 +106,7 @@ public partial class MainWindow
    UpdateStatus(_availableUpdate == null ? $"현재 버전 {version} · 새로 설치할 릴리스가 없습니다." : $"새 버전 {_availableUpdate.Version} · {(_availableUpdate.ArchiveBytes / 1048576d):N0} MB");
    if (_availableUpdate != null) Status($"새 버전 {_availableUpdate.Version} 사용 가능 · 업데이트 버튼에서 확인하세요.");
    // Do not interrupt an active edit/review with an automatic modal.
-   if (_availableUpdate != null && _tutorialWindow == null && (manual || (!_busy && _detail?.Fields.Any(f => f.IsDirty) != true && _relationsView?.HasPendingChanges != true))) await OfferUpdateAsync();
+   if (_availableUpdate != null && _tutorialOverlay == null && (manual || (!_busy && _detail?.Fields.Any(f => f.IsDirty) != true && _relationsView?.HasPendingChanges != true))) await OfferUpdateAsync();
   }
   catch (OperationCanceledException) { if (!_closing && generation == _updateCheckGeneration) UpdateStatus("업데이트 확인이 취소되었거나 시간이 초과되었습니다. 나중에 다시 확인할 수 있습니다."); }
   catch (Exception ex) { App.Log(ex); if (generation == _updateCheckGeneration) UpdateStatus("업데이트를 확인하지 못했습니다. 오프라인이어도 에디터를 계속 사용할 수 있습니다. " + ex.Message); }
@@ -114,7 +114,7 @@ public partial class MainWindow
  }
  private async Task OfferUpdateAsync()
  {
-  if (_tutorialWindow != null) { UpdateStatus("새 버전이 있습니다. 시작 안내를 닫은 뒤 업데이트에서 설치할 수 있습니다."); return; }
+  if (_tutorialOverlay != null) { UpdateStatus("새 버전이 있습니다. 시작 안내를 닫은 뒤 업데이트에서 설치할 수 있습니다."); return; }
   if (_downloadingUpdate || _closing) return;
   if (_availableUpdate == null) { UpdateStatus("먼저 '지금 확인'을 눌러주세요."); return; }
   if (_pendingUpdate != null) { UpdateStatus("이미 종료 후 설치가 예약되어 있습니다."); return; }

@@ -25,7 +25,7 @@ public static class SearchColumns
    if (seen.Add(f.Key)) result.Add(new(f.Key, Label(f), string.IsNullOrWhiteSpace(f.Section) ? "기타 정보" : f.Section, f.Key.StartsWith("score_") ? 145 : IsMoney(f.Key) ? 135 : IsDate(f.Key) ? 115 : 100, true, f.Hint));
   return result;
  }
- private static string Label(EditableField f) => f.Key switch { "contract.weekly_wage" => "주급 (£/주)", "contract.expires" => "계약 만료일", "person.dob" => "생년월일", "player.market_value" => "시장 가치 (£)", "player.asking_price" => "요구 이적료 (£)", _ => f.Label };
+ private static string Label(EditableField f) => f.Key switch { "contract.weekly_wage" => "주급 (£/주)", "contract.starts" => "계약 시작일", "contract.expires" => "계약 만료일", "person.dob" => "생년월일", "player.market_value" => "시장 가치 (£)", "player.asking_price" => "요구 이적료 (£)", _ => f.Label };
  public static List<string> Default(string kind) => kind switch
  {
   "Player" => ["name", "nationality", "age", "role", "club", "group", "ca", "pa", "football_category"],
@@ -43,7 +43,7 @@ public static class SearchColumns
   return result;
  }
  public static bool IsMoney(string key) => key.Contains("wage") || key.Contains("budget") || key.Contains("balance") && key.StartsWith("club.") || key is "player.market_value" or "player.asking_price" or "club.cash" or "club.transfer_base" or "club.transfer_current" || key.StartsWith("sponsor.") && (key.EndsWith(".annual") || key.EndsWith(".total"));
- public static bool IsDate(string key) => key is "person.dob" or "contract.expires";
+ public static bool IsDate(string key) => DateFieldPresentation.IsDate(key);
  public static string Format(string key, object? value)
  {
   if (value == null || value is not double number || !double.IsFinite(number)) return "—";

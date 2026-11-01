@@ -184,7 +184,9 @@ public sealed class EditableField : INotifyPropertyChanged, IDataErrorInfo
             if (!Editable) return;
             _editText = value;
             if (!double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed) || !double.IsFinite(parsed))
-                _error = "숫자를 입력하세요. 소수점은 . 을 사용합니다.";
+                _error = DateFieldPresentation.IsDate(Key) ? "유효한 날짜를 달력에서 선택하거나 입력하세요." : "숫자를 입력하세요. 소수점은 . 을 사용합니다.";
+            else if (DateFieldPresentation.IsDate(Key) && !DateFieldPresentation.TryParse(parsed, out _))
+                _error = "존재하는 날짜로 입력하세요. 예: 2030-06-30.";
             else if (parsed < Min || parsed > Max)
                 _error = $"{Min.ToString("G", CultureInfo.InvariantCulture)} ~ {Max.ToString("G", CultureInfo.InvariantCulture)} 범위로 입력하세요.";
             else
